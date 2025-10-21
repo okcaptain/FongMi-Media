@@ -18,26 +18,21 @@ package androidx.media3.muxer;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.muxer.Mp4Muxer.LAST_SAMPLE_DURATION_BEHAVIOR_SET_FROM_END_OF_STREAM_BUFFER_OR_DUPLICATE_PREVIOUS;
 import static androidx.media3.muxer.MuxerTestUtil.FAKE_VIDEO_FORMAT;
-import static androidx.media3.muxer.MuxerTestUtil.MP4_FILE_ASSET_DIRECTORY;
 import static androidx.media3.muxer.MuxerTestUtil.XMP_SAMPLE_DATA;
+import static androidx.media3.muxer.MuxerTestUtil.feedInputDataToMuxer;
 import static androidx.media3.muxer.MuxerTestUtil.getFakeSampleAndSampleInfo;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import android.content.Context;
-import android.media.MediaCodec;
-import android.media.MediaCodec.BufferInfo;
-import android.net.Uri;
 import android.util.Pair;
 import androidx.media3.common.C;
-import androidx.media3.common.util.MediaFormatUtil;
 import androidx.media3.common.util.Util;
 import androidx.media3.container.MdtaMetadataEntry;
 import androidx.media3.container.Mp4LocationData;
 import androidx.media3.container.Mp4OrientationData;
 import androidx.media3.container.Mp4TimestampData;
 import androidx.media3.container.XmpData;
-import androidx.media3.exoplayer.MediaExtractorCompat;
 import androidx.media3.extractor.mp4.Mp4Extractor;
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
 import androidx.media3.test.utils.DumpFileAsserts;
@@ -47,10 +42,7 @@ import androidx.media3.test.utils.TestUtil;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -62,6 +54,7 @@ public class Mp4MuxerEndToEndTest {
   @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   private static final String H265_HDR10_MP4 = "hdr10-720p.mp4";
+  private static final String AV1_MP4 = "sample_av1.mp4";
   private final Context context = ApplicationProvider.getApplicationContext();
 
   @Test
@@ -124,6 +117,35 @@ public class Mp4MuxerEndToEndTest {
 
     byte[] outputFileBytes = TestUtil.getByteArrayFromFilePath(outputFilePath);
     assertThat(outputFileBytes).isEmpty();
+  }
+
+  @Test
+  public void createAv1Mp4File_withoutCsd_matchesExpected() throws Exception {
+    String outputFilePath = temporaryFolder.newFile().getPath();
+    Mp4Muxer mp4Muxer = new Mp4Muxer.Builder(new FileOutputStream(outputFilePath)).build();
+
+    try {
+      mp4Muxer.addMetadataEntry(
+          new Mp4TimestampData(
+              /* creationTimestampSeconds= */ 100_000_000L,
+              /* modificationTimestampSeconds= */ 500_000_000L));
+      feedInputDataToMuxer(
+          context,
+          mp4Muxer,
+          AV1_MP4,
+          /* removeInitializationData= */ true,
+          /* removeAudioSampleFlags= */ false);
+    } finally {
+      if (mp4Muxer != null) {
+        mp4Muxer.close();
+      }
+    }
+
+    FakeExtractorOutput fakeExtractorOutput =
+        TestUtil.extractAllSamplesFromFilePath(
+            new Mp4Extractor(new DefaultSubtitleParserFactory()), checkNotNull(outputFilePath));
+    DumpFileAsserts.assertOutput(
+        context, fakeExtractorOutput, MuxerTestUtil.getExpectedDumpFilePath(AV1_MP4));
   }
 
   @Test
@@ -791,12 +813,11 @@ public class Mp4MuxerEndToEndTest {
       mp4Muxer.writeSampleData(track, sample3.first, sample3.second);
       mp4Muxer.writeSampleData(track, sample4.first, sample4.second);
       // Write end of stream sample.
-      BufferInfo endOfStreamBufferInfo = new BufferInfo();
-      endOfStreamBufferInfo.set(
-          /* newOffset= */ 0,
-          /* newSize= */ 0,
-          /* newTimeUs= */ expectedDurationUs,
-          /* newFlags= */ MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+      BufferInfo endOfStreamBufferInfo =
+          new BufferInfo(
+              /* presentationTimeUs= */ expectedDurationUs,
+              /* size= */ 0,
+              C.BUFFER_FLAG_END_OF_STREAM);
       mp4Muxer.writeSampleData(track, ByteBuffer.allocate(0), endOfStreamBufferInfo);
     } finally {
       mp4Muxer.close();
@@ -905,6 +926,38 @@ public class Mp4MuxerEndToEndTest {
             "sample_batching_and_attempt_streamable_output_disabled_" + H265_HDR10_MP4));
   }
 
+  @Test
+  public void
+      writeMp4File_withSomeFreeSpaceAfterFileTypeBoxAndAttemptStreamableOutputDisabled_reservesExpectedFreeSpace()
+          throws Exception {
+    String outputFilePath = temporaryFolder.newFile().getPath();
+    Mp4Muxer muxer =
+        new Mp4Muxer.Builder(new FileOutputStream(outputFilePath))
+            .experimentalSetFreeSpaceAfterFileTypeBox(500)
+            .setAttemptStreamableOutputEnabled(false)
+            .build();
+    Pair<ByteBuffer, BufferInfo> sampleAndSampleInfo =
+        getFakeSampleAndSampleInfo(/* presentationTimeUs= */ 0L);
+
+    try {
+      muxer.addMetadataEntry(
+          new Mp4TimestampData(
+              /* creationTimestampSeconds= */ 1_000_000L,
+              /* modificationTimestampSeconds= */ 5_000_000L));
+      int trackId = muxer.addTrack(FAKE_VIDEO_FORMAT);
+      muxer.writeSampleData(trackId, sampleAndSampleInfo.first, sampleAndSampleInfo.second);
+    } finally {
+      muxer.close();
+    }
+
+    DumpableMp4Box dumpableBox =
+        new DumpableMp4Box(ByteBuffer.wrap(TestUtil.getByteArrayFromFilePath(outputFilePath)));
+    DumpFileAsserts.assertOutput(
+        context,
+        dumpableBox,
+        MuxerTestUtil.getExpectedDumpFilePath("mp4_with_some_free_space_after_ftyp.mp4"));
+  }
+
   private static void writeFakeSamples(Mp4Muxer muxer, int trackId, int sampleCount)
       throws MuxerException {
     for (int i = 0; i < sampleCount; i++) {
@@ -912,39 +965,5 @@ public class Mp4MuxerEndToEndTest {
           getFakeSampleAndSampleInfo(/* presentationTimeUs= */ i);
       muxer.writeSampleData(trackId, sampleAndSampleInfo.first, sampleAndSampleInfo.second);
     }
-  }
-
-  private static void feedInputDataToMuxer(Context context, Mp4Muxer muxer, String inputFileName)
-      throws IOException, MuxerException {
-    MediaExtractorCompat extractor = new MediaExtractorCompat(context);
-    Uri fileUri = Uri.parse(MP4_FILE_ASSET_DIRECTORY + inputFileName);
-    extractor.setDataSource(fileUri, /* offset= */ 0);
-
-    List<Integer> addedTracks = new ArrayList<>();
-    for (int i = 0; i < extractor.getTrackCount(); i++) {
-      int trackId =
-          muxer.addTrack(MediaFormatUtil.createFormatFromMediaFormat(extractor.getTrackFormat(i)));
-      addedTracks.add(trackId);
-      extractor.selectTrack(i);
-    }
-
-    do {
-      MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-      bufferInfo.flags = extractor.getSampleFlags();
-      bufferInfo.offset = 0;
-      bufferInfo.presentationTimeUs = extractor.getSampleTime();
-      int sampleSize = (int) extractor.getSampleSize();
-      bufferInfo.size = sampleSize;
-
-      ByteBuffer sampleBuffer = ByteBuffer.allocateDirect(sampleSize);
-      extractor.readSampleData(sampleBuffer, /* offset= */ 0);
-
-      sampleBuffer.rewind();
-
-      muxer.writeSampleData(
-          addedTracks.get(extractor.getSampleTrackIndex()), sampleBuffer, bufferInfo);
-    } while (extractor.advance());
-
-    extractor.release();
   }
 }

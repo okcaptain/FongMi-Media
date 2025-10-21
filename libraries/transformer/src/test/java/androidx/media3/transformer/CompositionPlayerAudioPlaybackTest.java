@@ -15,6 +15,7 @@
  */
 package androidx.media3.transformer;
 
+import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_STEREO_48000KHZ;
@@ -22,18 +23,20 @@ import static androidx.media3.transformer.TestUtil.createAudioEffects;
 import static androidx.media3.transformer.TestUtil.createChannelCountChangingAudioProcessor;
 import static androidx.media3.transformer.TestUtil.createSampleRateChangingAudioProcessor;
 import static androidx.media3.transformer.TestUtil.createVolumeScalingAudioProcessor;
+import static com.google.common.truth.Truth.assertThat;
 
 import android.content.Context;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.audio.AudioSink;
-import androidx.media3.exoplayer.audio.DefaultAudioSink;
 import androidx.media3.test.utils.CapturingAudioSink;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeClock;
 import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import java.io.IOException;
+import java.util.concurrent.TimeoutException;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -53,7 +56,7 @@ public final class CompositionPlayerAudioPlaybackTest {
 
   @Before
   public void setUp() throws Exception {
-    capturingAudioSink = new CapturingAudioSink(new DefaultAudioSink.Builder(context).build());
+    capturingAudioSink = CapturingAudioSink.create();
   }
 
   @Test
@@ -344,6 +347,86 @@ public final class CompositionPlayerAudioPlaybackTest {
   }
 
   @Test
+  public void playTwoSequences_withLongLoopingSequence_hasNonLoopingSequenceDuration() {
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    EditedMediaItemSequence primarySequence =
+        new EditedMediaItemSequence.Builder(
+                new EditedMediaItem.Builder(
+                        MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW_STEREO_48000KHZ))
+                    .setDurationUs(348_000L)
+                    .build())
+            .build();
+    EditedMediaItemSequence loopingSequence =
+        new EditedMediaItemSequence.Builder(
+                new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+                    .setDurationUs(1_000_000L)
+                    .build())
+            .setIsLooping(true)
+            .build();
+    Composition composition = new Composition.Builder(primarySequence, loopingSequence).build();
+    player.setComposition(composition);
+    player.prepare();
+
+    assertThat(player.getDuration()).isEqualTo(348);
+  }
+
+  @Test
+  public void play_audioSequenceWithMiddleGap_outputsCorrectSamples()
+      throws TimeoutException, IOException {
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    EditedMediaItem clip =
+        new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+            .setDurationUs(1_000_000L)
+            .build();
+    EditedMediaItemSequence sequence =
+        new EditedMediaItemSequence.Builder(clip).addGap(500_000L).addItem(clip).build();
+    Composition composition = new Composition.Builder(sequence).build();
+    player.setComposition(composition);
+    player.prepare();
+    checkState(player.getDuration() == 2_500L);
+
+    player.play();
+    TestPlayerRunHelper.runUntilPlaybackState(player, Player.STATE_ENDED);
+    player.release();
+
+    DumpFileAsserts.assertOutput(
+        context,
+        capturingAudioSink,
+        PREVIEW_DUMP_FILE_EXTENSION
+            + "wav/sequencePlayback_withMiddleGap_outputsCorrectSamples.dump");
+  }
+
+  @Test
+  public void play_audioSequenceWithStartGap_outputsCorrectSamples()
+      throws TimeoutException, IOException {
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    EditedMediaItem clip =
+        new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+            .setDurationUs(1_000_000L)
+            .build();
+    EditedMediaItemSequence sequence =
+        new EditedMediaItemSequence.Builder()
+            .addGap(500_000L)
+            .addItem(clip)
+            .experimentalSetForceAudioTrack(true)
+            .build();
+    Composition composition = new Composition.Builder(sequence).build();
+    player.setComposition(composition);
+    player.prepare();
+    checkState(player.getDuration() == 1_500L);
+
+    player.play();
+    TestPlayerRunHelper.runUntilPlaybackState(player, Player.STATE_ENDED);
+    player.release();
+
+    DumpFileAsserts.assertOutput(
+        context,
+        capturingAudioSink,
+        PREVIEW_DUMP_FILE_EXTENSION
+            + "wav/sequencePlayback_withStartGap_outputsCorrectSamples.dump");
+  }
+
+  @Test
   public void playSingleSequence_withRepeatModeEnabled_outputsCorrectSamples() throws Exception {
     CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
     player.setRepeatMode(Player.REPEAT_MODE_ALL);
@@ -608,6 +691,33 @@ public final class CompositionPlayerAudioPlaybackTest {
         PREVIEW_DUMP_FILE_EXTENSION
             + FILE_AUDIO_RAW
             + "_then_sample_rf64.wav_clipped_seek_to_800_ms.dump");
+  }
+
+  @Test
+  public void playSingleSequence_replayAfterEnd_outputCorrectSamples() throws Exception {
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    EditedMediaItem editedMediaItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+            .setDurationUs(1_000_000L)
+            .build();
+    EditedMediaItemSequence sequence = new EditedMediaItemSequence.Builder(editedMediaItem).build();
+    Composition composition = new Composition.Builder(sequence).build();
+
+    player.setComposition(composition);
+    player.prepare();
+    // First Play
+    player.play();
+    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    // Second Play
+    player.seekToDefaultPosition();
+    player.play();
+    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    player.release();
+
+    DumpFileAsserts.assertOutput(
+        context,
+        capturingAudioSink,
+        PREVIEW_DUMP_FILE_EXTENSION + FILE_AUDIO_RAW + "_playedTwice.dump");
   }
 
   private static CompositionPlayer createCompositionPlayer(Context context, AudioSink audioSink) {

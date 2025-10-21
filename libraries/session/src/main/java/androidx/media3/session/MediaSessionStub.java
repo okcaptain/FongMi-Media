@@ -44,6 +44,8 @@ import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.postOrRun;
 import static androidx.media3.common.util.Util.postOrRunWithCompletion;
 import static androidx.media3.common.util.Util.transformFutureAsync;
+import static androidx.media3.session.MediaSessionImpl.createPlayerCommandsForCustomErrorState;
+import static androidx.media3.session.MediaSessionImpl.createPlayerInfoForCustomPlaybackException;
 import static androidx.media3.session.SessionCommand.COMMAND_CODE_CUSTOM;
 import static androidx.media3.session.SessionCommand.COMMAND_CODE_LIBRARY_GET_CHILDREN;
 import static androidx.media3.session.SessionCommand.COMMAND_CODE_LIBRARY_GET_ITEM;
@@ -75,6 +77,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaLibraryInfo;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
 import androidx.media3.common.Rating;
@@ -120,7 +123,7 @@ import java.util.concurrent.ExecutionException;
   private static final String TAG = "MediaSessionStub";
 
   /** The version of the IMediaSession interface. */
-  public static final int VERSION_INT = 4;
+  public static final int VERSION_INT = 5;
 
   /**
    * Sequence number used when a controller method is triggered on the sesison side that wasn't
@@ -129,7 +132,6 @@ import java.util.concurrent.ExecutionException;
   public static final int UNKNOWN_SEQUENCE_NUMBER = Integer.MIN_VALUE;
 
   private final WeakReference<MediaSessionImpl> sessionImpl;
-  private final MediaSessionManager sessionManager;
   private final ConnectedControllersManager<IBinder> connectedControllersManager;
   private final Set<ControllerInfo> pendingControllers;
 
@@ -139,7 +141,6 @@ import java.util.concurrent.ExecutionException;
   public MediaSessionStub(MediaSessionImpl sessionImpl) {
     // Initialize members with params.
     this.sessionImpl = new WeakReference<>(sessionImpl);
-    sessionManager = MediaSessionManager.getSessionManager(sessionImpl.getContext());
     connectedControllersManager = new ConnectedControllersManager<>(sessionImpl);
     // ConcurrentHashMap has a bug in APIs 21-22 that can result in lost updates.
     pendingControllers = Collections.synchronizedSet(new HashSet<>());
@@ -151,9 +152,16 @@ import java.util.concurrent.ExecutionException;
   }
 
   private static void sendSessionResult(
-      ControllerInfo controller, int sequenceNumber, SessionResult result) {
+      MediaSessionImpl sessionImpl,
+      ControllerInfo controller,
+      int sequenceNumber,
+      SessionResult result) {
     try {
       checkStateNotNull(controller.getControllerCb()).onSessionResult(sequenceNumber, result);
+      // Make sure the session sends out a new PlayerInfo update in any case, even if the controller
+      // command we just handled didn't change anything. This is needed to end any masking states
+      // in the controllers waiting to acknowledge this command.
+      sessionImpl.triggerPlayerInfoUpdate();
     } catch (RemoteException e) {
       Log.w(TAG, "Failed to send result to controller " + controller, e);
     }
@@ -173,7 +181,7 @@ import java.util.concurrent.ExecutionException;
       }
       task.run(sessionImpl.getPlayerWrapper(), controller);
       sendSessionResult(
-          controller, sequenceNumber, new SessionResult(SessionResult.RESULT_SUCCESS));
+          sessionImpl, controller, sequenceNumber, new SessionResult(SessionResult.RESULT_SUCCESS));
       return Futures.immediateVoidFuture();
     };
   }
@@ -202,7 +210,7 @@ import java.util.concurrent.ExecutionException;
                             ? ERROR_NOT_SUPPORTED
                             : ERROR_UNKNOWN);
               }
-              sendSessionResult(controller, sequenceNumber, result);
+              sendSessionResult(sessionImpl, controller, sequenceNumber, result);
             });
   }
 
@@ -318,15 +326,16 @@ import java.util.concurrent.ExecutionException;
           sessionImpl.getApplicationHandler(),
           () -> {
             if (!connectedControllersManager.isPlayerCommandAvailable(controller, command)) {
-              sendSessionResult(
-                  controller, sequenceNumber, new SessionResult(ERROR_PERMISSION_DENIED));
+              SessionResult deniedResult = new SessionResult(ERROR_PERMISSION_DENIED);
+              sendSessionResult(sessionImpl, controller, sequenceNumber, deniedResult);
               return;
             }
             @SessionResult.Code
             int resultCode = sessionImpl.onPlayerCommandRequestOnHandler(controller, command);
             if (resultCode != SessionResult.RESULT_SUCCESS) {
               // Don't run rejected command.
-              sendSessionResult(controller, sequenceNumber, new SessionResult(resultCode));
+              sendSessionResult(
+                  sessionImpl, controller, sequenceNumber, new SessionResult(resultCode));
               return;
             }
             if (command == COMMAND_SET_VIDEO_SURFACE) {
@@ -395,14 +404,14 @@ import java.util.concurrent.ExecutionException;
             if (sessionCommand != null) {
               if (!connectedControllersManager.isSessionCommandAvailable(
                   controller, sessionCommand)) {
-                sendSessionResult(
-                    controller, sequenceNumber, new SessionResult(ERROR_PERMISSION_DENIED));
+                SessionResult deniedResult = new SessionResult(ERROR_PERMISSION_DENIED);
+                sendSessionResult(sessionImpl, controller, sequenceNumber, deniedResult);
                 return;
               }
             } else {
               if (!connectedControllersManager.isSessionCommandAvailable(controller, commandCode)) {
-                sendSessionResult(
-                    controller, sequenceNumber, new SessionResult(ERROR_PERMISSION_DENIED));
+                SessionResult deniedResult = new SessionResult(ERROR_PERMISSION_DENIED);
+                sendSessionResult(sessionImpl, controller, sequenceNumber, deniedResult);
                 return;
               }
             }
@@ -458,16 +467,12 @@ import java.util.concurrent.ExecutionException;
   @SuppressWarnings("UngroupedOverloads") // Overload belongs to AIDL interface that is separated.
   public void connect(@Nullable IMediaController caller, @Nullable ControllerInfo controllerInfo) {
     if (caller == null || controllerInfo == null) {
+      SessionUtil.disconnectIMediaController(caller);
       return;
     }
     @Nullable MediaSessionImpl sessionImpl = this.sessionImpl.get();
     if (sessionImpl == null || sessionImpl.isReleased()) {
-      try {
-        caller.onDisconnected(/* seq= */ 0);
-      } catch (RemoteException e) {
-        // Controller may be died prematurely.
-        // Not an issue because we'll ignore it anyway.
-      }
+      SessionUtil.disconnectIMediaController(caller);
       return;
     }
     pendingControllers.add(controllerInfo);
@@ -521,10 +526,27 @@ import java.util.concurrent.ExecutionException;
             // It's needed because we cannot call synchronous calls between
             // session/controller.
             PlayerWrapper playerWrapper = sessionImpl.getPlayerWrapper();
-            PlayerInfo playerInfo = playerWrapper.createPlayerInfoForBundling();
+
+            Player.Commands controllerPlayerCommands;
+            PlayerInfo playerInfo = sessionImpl.getPlayerInfo();
+            @Nullable
+            PlaybackException sessionPlaybackException = sessionImpl.getPlaybackException();
+            if (sessionPlaybackException == null) {
+              controllerPlayerCommands = connectionResult.availablePlayerCommands;
+            } else {
+              connectedControllersManager.setPlaybackException(
+                  controllerInfo,
+                  sessionPlaybackException,
+                  connectionResult.availablePlayerCommands);
+              playerInfo =
+                  createPlayerInfoForCustomPlaybackException(playerInfo, sessionPlaybackException);
+              controllerPlayerCommands =
+                  checkNotNull(
+                      createPlayerCommandsForCustomErrorState(
+                          connectionResult.availablePlayerCommands));
+            }
             playerInfo = generateAndCacheUniqueTrackGroupIds(playerInfo);
-            Token platformToken =
-                (Token) sessionImpl.getSessionCompat().getSessionToken().getToken();
+            Token platformToken = sessionImpl.getPlatformToken();
             ConnectionState state =
                 new ConnectionState(
                     MediaLibraryInfo.VERSION_INT,
@@ -541,7 +563,7 @@ import java.util.concurrent.ExecutionException;
                         : sessionImpl.getMediaButtonPreferences(),
                     sessionImpl.getCommandButtonsForMediaItems(),
                     connectionResult.availableSessionCommands,
-                    connectionResult.availablePlayerCommands,
+                    controllerPlayerCommands,
                     playerWrapper.getAvailableCommands(),
                     sessionImpl.getToken().getExtras(),
                     connectionResult.sessionExtras != null
@@ -570,12 +592,7 @@ import java.util.concurrent.ExecutionException;
             }
           } finally {
             if (!connected) {
-              try {
-                caller.onDisconnected(/* seq= */ 0);
-              } catch (RemoteException e) {
-                // Controller may be died prematurely.
-                // Not an issue because we'll ignore it anyway.
-              }
+              SessionUtil.disconnectIMediaController(caller);
             }
           }
         });
@@ -584,25 +601,20 @@ import java.util.concurrent.ExecutionException;
   public void release() {
     List<ControllerInfo> controllers = connectedControllersManager.getConnectedControllers();
     for (ControllerInfo controller : controllers) {
+      connectedControllersManager.removeController(controller);
       ControllerCb cb = controller.getControllerCb();
       if (cb != null) {
-        try {
-          cb.onDisconnected(/* seq= */ 0);
-        } catch (RemoteException e) {
-          // Ignore. We're releasing.
-        }
+        cb.onDisconnected(/* seq= */ 0);
       }
     }
     for (ControllerInfo controller : pendingControllers) {
       ControllerCb cb = controller.getControllerCb();
       if (cb != null) {
-        try {
-          cb.onDisconnected(/* seq= */ 0);
-        } catch (RemoteException e) {
-          // Ignore. We're releasing.
-        }
+        cb.onDisconnected(/* seq= */ 0);
       }
     }
+    pendingControllers.clear();
+    sessionImpl.clear();
   }
 
   //////////////////////////////////////////////////////////////////////////////////////////////
@@ -634,12 +646,17 @@ import java.util.concurrent.ExecutionException;
 
       MediaSessionManager.RemoteUserInfo remoteUserInfo =
           new MediaSessionManager.RemoteUserInfo(request.packageName, pid, uid);
+      @Nullable MediaSessionImpl sessionImpl = this.sessionImpl.get();
+      boolean isTrustedForMediaControl =
+          sessionImpl != null
+              && MediaSessionManager.getSessionManager(sessionImpl.getContext())
+                  .isTrustedForMediaControl(remoteUserInfo);
       ControllerInfo controllerInfo =
           new ControllerInfo(
               remoteUserInfo,
               request.libraryVersion,
               request.controllerInterfaceVersion,
-              sessionManager.isTrustedForMediaControl(remoteUserInfo),
+              isTrustedForMediaControl,
               new MediaSessionStub.Controller2Cb(caller, request.controllerInterfaceVersion),
               request.connectionHints,
               request.maxCommandsForMediaItems);
@@ -2146,8 +2163,8 @@ import java.util.concurrent.ExecutionException;
     }
 
     @Override
-    public void onDisconnected(int sequenceNumber) throws RemoteException {
-      iController.onDisconnected(sequenceNumber);
+    public void onDisconnected(int sequenceNumber) {
+      SessionUtil.disconnectIMediaController(iController);
     }
 
     @Override

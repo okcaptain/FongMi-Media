@@ -17,6 +17,9 @@ package androidx.media3.exoplayer.video;
 
 import static androidx.media3.common.util.Assertions.checkArgument;
 import static androidx.media3.common.util.Util.msToUs;
+import static androidx.media3.exoplayer.video.VideoSink.RELEASE_FIRST_FRAME_IMMEDIATELY;
+import static androidx.media3.exoplayer.video.VideoSink.RELEASE_FIRST_FRAME_WHEN_PREVIOUS_STREAM_PROCESSED;
+import static androidx.media3.exoplayer.video.VideoSink.RELEASE_FIRST_FRAME_WHEN_STARTED;
 import static java.lang.Math.min;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
@@ -31,7 +34,6 @@ import androidx.media3.common.util.Clock;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.exoplayer.ExoPlaybackException;
-import androidx.media3.exoplayer.Renderer;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -81,7 +83,7 @@ public final class VideoFrameReleaseControl {
   /** Signals that a frame should be ignored. */
   public static final int FRAME_RELEASE_IGNORE = 4;
 
-  /** Signals that a frame should not be released and the renderer should try again later. */
+  /** Signals that a frame should not be released and the caller should try again later. */
   public static final int FRAME_RELEASE_TRY_AGAIN_LATER = 5;
 
   /** Per {@link FrameReleaseAction} metadata. */
@@ -182,6 +184,7 @@ public final class VideoFrameReleaseControl {
   private Clock clock;
   private boolean hasOutputSurface;
   private boolean frameReadyWithoutSurface;
+  private boolean disableAdvancingTimestampChecks;
 
   /**
    * Creates an instance.
@@ -190,7 +193,7 @@ public final class VideoFrameReleaseControl {
    * @param frameTimingEvaluator The {@link FrameTimingEvaluator} that will assist in {@linkplain
    *     #getFrameReleaseAction(long, long, long, long, boolean, boolean, FrameReleaseInfo) frame
    *     release actions}.
-   * @param allowedJoiningTimeMs The maximum duration in milliseconds for which the renderer can
+   * @param allowedJoiningTimeMs The maximum duration in milliseconds for which the caller can
    *     attempt to seamlessly join an ongoing playback.
    */
   public VideoFrameReleaseControl(
@@ -208,36 +211,40 @@ public final class VideoFrameReleaseControl {
     clock = Clock.DEFAULT;
   }
 
-  /** Called when the renderer is enabled. */
-  public void onEnabled(boolean releaseFirstFrameBeforeStarted) {
-    firstFrameState =
-        releaseFirstFrameBeforeStarted
-            ? C.FIRST_FRAME_NOT_RENDERED
-            : C.FIRST_FRAME_NOT_RENDERED_ONLY_ALLOWED_IF_STARTED;
+  /**
+   * Called when the stream changes.
+   *
+   * <p>Must also be called for the first stream.
+   */
+  public void onStreamChanged(
+      @VideoSink.FirstFrameReleaseInstruction int firstFrameReleaseInstruction) {
+    switch (firstFrameReleaseInstruction) {
+      case RELEASE_FIRST_FRAME_IMMEDIATELY:
+        firstFrameState = C.FIRST_FRAME_NOT_RENDERED;
+        break;
+      case RELEASE_FIRST_FRAME_WHEN_STARTED:
+        firstFrameState = C.FIRST_FRAME_NOT_RENDERED_ONLY_ALLOWED_IF_STARTED;
+        break;
+      case RELEASE_FIRST_FRAME_WHEN_PREVIOUS_STREAM_PROCESSED:
+        lowerFirstFrameState(C.FIRST_FRAME_NOT_RENDERED_AFTER_STREAM_CHANGE);
+        break;
+      default:
+        throw new IllegalStateException();
+    }
   }
 
-  /** Called when the renderer is disabled. */
-  public void onDisabled() {
-    lowerFirstFrameState(C.FIRST_FRAME_NOT_RENDERED_ONLY_ALLOWED_IF_STARTED);
-  }
-
-  /** Called when the renderer is started. */
+  /** Called when rendering starts. */
   public void onStarted() {
     started = true;
     lastReleaseRealtimeUs = msToUs(clock.elapsedRealtime());
     frameReleaseHelper.onStarted();
   }
 
-  /** Called when the renderer is stopped. */
+  /** Called when rendering stops. */
   public void onStopped() {
     started = false;
     joiningDeadlineMs = C.TIME_UNSET;
     frameReleaseHelper.onStopped();
-  }
-
-  /** Called when the renderer processed a stream change. */
-  public void onProcessedStreamChange() {
-    lowerFirstFrameState(C.FIRST_FRAME_NOT_RENDERED_AFTER_STREAM_CHANGE);
   }
 
   /** Called when the display surface changed. */
@@ -283,14 +290,11 @@ public final class VideoFrameReleaseControl {
   /**
    * Whether the release control is ready to start playback.
    *
-   * <p>The renderer should be {@linkplain Renderer#isReady() ready} if and only if the release
-   * control is ready.
-   *
-   * @param rendererOtherwiseReady Whether the renderer is ready except for the release control.
+   * @param otherwiseReady Whether the caller is ready except for the release control.
    * @return Whether the release control is ready.
    */
-  public boolean isReady(boolean rendererOtherwiseReady) {
-    if (rendererOtherwiseReady
+  public boolean isReady(boolean otherwiseReady) {
+    if (otherwiseReady
         && (firstFrameState == C.FIRST_FRAME_RENDERED
             || (!hasOutputSurface && frameReadyWithoutSurface))) {
       // Ready. If we were joining then we've now joined, so clear the joining deadline.
@@ -325,7 +329,7 @@ public final class VideoFrameReleaseControl {
   }
 
   /**
-   * Returns a {@link FrameReleaseAction} for a video frame which instructs a renderer what to do
+   * Returns a {@link FrameReleaseAction} for a video frame which instructs the caller what to do
    * with the frame.
    *
    * @param presentationTimeUs The presentation time of the video frame, in microseconds.
@@ -339,7 +343,7 @@ public final class VideoFrameReleaseControl {
    * @param frameReleaseInfo A {@link FrameReleaseInfo} that will be filled with detailed data only
    *     if the method returns {@link #FRAME_RELEASE_IMMEDIATELY} or {@link
    *     #FRAME_RELEASE_SCHEDULED}.
-   * @return A {@link FrameReleaseAction} that should instruct the renderer whether to release the
+   * @return A {@link FrameReleaseAction} that should instruct the caller whether to release the
    *     frame or not.
    */
   public @FrameReleaseAction int getFrameReleaseAction(
@@ -353,7 +357,7 @@ public final class VideoFrameReleaseControl {
       throws ExoPlaybackException {
     frameReleaseInfo.reset();
 
-    if (initialPositionUs == C.TIME_UNSET) {
+    if (started && initialPositionUs == C.TIME_UNSET) {
       initialPositionUs = positionUs;
     }
     if (lastPresentationTimeUs != presentationTimeUs) {
@@ -430,7 +434,7 @@ public final class VideoFrameReleaseControl {
     frameReleaseHelper.setChangeFrameRateStrategy(changeFrameRateStrategy);
   }
 
-  /** Sets the playback speed. Called when the renderer playback speed changes. */
+  /** Sets the playback speed. */
   public void setPlaybackSpeed(@FloatRange(from = 0, fromInclusive = false) float speed) {
     checkArgument(speed > 0);
     if (speed == playbackSpeed) {
@@ -438,6 +442,15 @@ public final class VideoFrameReleaseControl {
     }
     this.playbackSpeed = speed;
     frameReleaseHelper.onPlaybackSpeed(speed);
+  }
+
+  /**
+   * Experimental setter to ignore the checks for advancing timestamps before checking whether a
+   * late frame needs to be force released.
+   */
+  // TODO: b/417646815 - Remove this workaround method once it's no longer needed
+  /* package */ void experimentalDisableAdvancingTimestampChecks() {
+    this.disableAdvancingTimestampChecks = true;
   }
 
   private void lowerFirstFrameState(@C.FirstFrameState int firstFrameState) {
@@ -457,9 +470,8 @@ public final class VideoFrameReleaseControl {
    */
   private long calculateEarlyTimeUs(
       long positionUs, long elapsedRealtimeUs, long framePresentationTimeUs) {
-    // Calculate how early we are. In other words, the realtime duration that needs to elapse whilst
-    // the renderer is started before the frame should be rendered. A negative value means that
-    // we're already late.
+    // Calculate how early we are. In other words, calculate the realtime duration that needs to
+    // elapse before the frame should be rendered. A negative value means that we're already late.
     // Note: Use of double rather than float is intentional for accuracy in the calculations below.
     long earlyUs = (long) ((framePresentationTimeUs - positionUs) / (double) playbackSpeed);
     if (started) {
@@ -488,6 +500,8 @@ public final class VideoFrameReleaseControl {
         long elapsedTimeSinceLastReleaseUs =
             msToUs(clock.elapsedRealtime()) - lastReleaseRealtimeUs;
         return started
+            && (disableAdvancingTimestampChecks
+                || (initialPositionUs != C.TIME_UNSET && initialPositionUs != positionUs))
             && frameTimingEvaluator.shouldForceReleaseFrame(earlyUs, elapsedTimeSinceLastReleaseUs);
       default:
         throw new IllegalStateException();

@@ -27,8 +27,6 @@ import static androidx.media3.muxer.MuxerUtil.isMetadataSupported;
 import static androidx.media3.muxer.MuxerUtil.populateAuxiliaryTracksMetadata;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
-import android.media.MediaCodec;
-import android.media.MediaCodec.BufferInfo;
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
@@ -74,6 +72,7 @@ import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
  *         <li>H.265 (HEVC)
  *         <li>VP9
  *         <li>APV
+ *         <li>Dolby Vision
  *       </ul>
  *   <li>Audio Codecs:
  *       <ul>
@@ -110,7 +109,7 @@ import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
  * </ul>
  */
 @UnstableApi
-public final class Mp4Muxer implements AutoCloseable {
+public final class Mp4Muxer implements Muxer {
   /** Parameters for {@link #FILE_FORMAT_MP4_WITH_AUXILIARY_TRACKS_EXTENSION}. */
   public static final class Mp4AtFileParameters {
     /** Provides temporary cache files to be used by the muxer. */
@@ -160,19 +159,19 @@ public final class Mp4Muxer implements AutoCloseable {
   public static final int LAST_SAMPLE_DURATION_BEHAVIOR_SET_TO_ZERO = 0;
 
   /**
-   * Use the {@link MediaCodec#BUFFER_FLAG_END_OF_STREAM end of stream sample} to set the duration
-   * of the last sample.
+   * Use the {@link C#BUFFER_FLAG_END_OF_STREAM end of stream sample} to set the duration of the
+   * last sample.
    *
    * <p>After {@linkplain #writeSampleData writing} all the samples for a track, the app must
    * {@linkplain #writeSampleData write} an empty sample with flag {@link
-   * MediaCodec#BUFFER_FLAG_END_OF_STREAM}. The timestamp of this sample should be equal to the
-   * desired track duration.
+   * C#BUFFER_FLAG_END_OF_STREAM}. The timestamp of this sample should be equal to the desired track
+   * duration.
    *
-   * <p>Once a sample with flag {@link MediaCodec#BUFFER_FLAG_END_OF_STREAM} is {@linkplain
-   * #writeSampleData written}, no more samples can be written for that track.
+   * <p>Once a sample with flag {@link C#BUFFER_FLAG_END_OF_STREAM} is {@linkplain #writeSampleData
+   * written}, no more samples can be written for that track.
    *
-   * <p>If no explicit {@link MediaCodec#BUFFER_FLAG_END_OF_STREAM} sample is passed, then the
-   * duration of the last sample will be same as that of the sample before that.
+   * <p>If no explicit {@link C#BUFFER_FLAG_END_OF_STREAM} sample is passed, then the duration of
+   * the last sample will be same as that of the sample before that.
    */
   public static final int
       LAST_SAMPLE_DURATION_BEHAVIOR_SET_FROM_END_OF_STREAM_BUFFER_OR_DUPLICATE_PREVIOUS = 1;
@@ -209,6 +208,7 @@ public final class Mp4Muxer implements AutoCloseable {
     private boolean attemptStreamableOutputEnabled;
     private @FileFormat int outputFileFormat;
     @Nullable private Mp4AtFileParameters mp4AtFileParameters;
+    private int freeSpaceAfterFtypInBytes;
 
     /**
      * Creates a {@link Builder} instance with default values.
@@ -327,6 +327,27 @@ public final class Mp4Muxer implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Sets the amount of free space (in bytes) to be reserved immediately after the {@code ftyp}
+     * box (File Type box) in the MP4 file.
+     *
+     * <p>The {@code moov} box (Movie Box) is written in the reserved space if {@link
+     * #setAttemptStreamableOutputEnabled(boolean)} is set to {@code true}, and the size of the
+     * {@code moov} box is not greater than {@code bytes}. Otherwise, a {@code free} box of the
+     * requested size is written.
+     *
+     * <p>By default 400_000 bytes are reserved if {@link
+     * #setAttemptStreamableOutputEnabled(boolean)} is set to {@code true}.
+     *
+     * <p>This method is experimental and will be renamed or removed in a future release.
+     */
+    @CanIgnoreReturnValue
+    public Mp4Muxer.Builder experimentalSetFreeSpaceAfterFileTypeBox(int bytes) {
+      checkArgument(bytes >= 0);
+      this.freeSpaceAfterFtypInBytes = bytes;
+      return this;
+    }
+
     /** Builds an {@link Mp4Muxer} instance. */
     public Mp4Muxer build() {
       checkArgument(
@@ -342,7 +363,8 @@ public final class Mp4Muxer implements AutoCloseable {
           sampleBatchingEnabled,
           attemptStreamableOutputEnabled,
           outputFileFormat,
-          mp4AtFileParameters);
+          mp4AtFileParameters,
+          freeSpaceAfterFtypInBytes);
     }
   }
 
@@ -356,7 +378,8 @@ public final class Mp4Muxer implements AutoCloseable {
           MimeTypes.VIDEO_H265,
           MimeTypes.VIDEO_MP4V,
           MimeTypes.VIDEO_VP9,
-          MimeTypes.VIDEO_APV);
+          MimeTypes.VIDEO_APV,
+          MimeTypes.VIDEO_DOLBY_VISION);
 
   /** A list of supported audio {@linkplain MimeTypes sample MIME types}. */
   public static final ImmutableList<String> SUPPORTED_AUDIO_SAMPLE_MIME_TYPES =
@@ -379,6 +402,7 @@ public final class Mp4Muxer implements AutoCloseable {
   private final boolean sampleCopyEnabled;
   private final boolean sampleBatchingEnabled;
   private final boolean attemptStreamableOutputEnabled;
+  private final int freeSpaceAfterFtypInBytes;
   private final @FileFormat int outputFileFormat;
   @Nullable private final Mp4AtFileParameters mp4AtFileParameters;
   private final MetadataCollector metadataCollector;
@@ -401,7 +425,8 @@ public final class Mp4Muxer implements AutoCloseable {
       boolean sampleBatchingEnabled,
       boolean attemptStreamableOutputEnabled,
       @FileFormat int outputFileFormat,
-      @Nullable Mp4AtFileParameters mp4AtFileParameters) {
+      @Nullable Mp4AtFileParameters mp4AtFileParameters,
+      int freeSpaceAfterFtypInBytes) {
     this.outputStream = outputStream;
     outputChannel = outputStream.getChannel();
     this.lastSampleDurationBehavior = lastFrameDurationBehavior;
@@ -411,6 +436,7 @@ public final class Mp4Muxer implements AutoCloseable {
     this.attemptStreamableOutputEnabled = attemptStreamableOutputEnabled;
     this.outputFileFormat = outputFileFormat;
     this.mp4AtFileParameters = mp4AtFileParameters;
+    this.freeSpaceAfterFtypInBytes = freeSpaceAfterFtypInBytes;
     metadataCollector = new MetadataCollector();
     mp4Writer =
         new Mp4Writer(
@@ -420,13 +446,14 @@ public final class Mp4Muxer implements AutoCloseable {
             lastFrameDurationBehavior,
             sampleCopyEnabled,
             sampleBatchingEnabled,
-            attemptStreamableOutputEnabled);
+            attemptStreamableOutputEnabled,
+            freeSpaceAfterFtypInBytes);
     trackIdToTrack = new ArrayList<>();
     auxiliaryTracks = new ArrayList<>();
   }
 
   /**
-   * Adds a track of the given media format.
+   * {@inheritDoc}
    *
    * <p>Tracks can be added at any point before the muxer is closed, even after writing samples to
    * other tracks.
@@ -438,6 +465,7 @@ public final class Mp4Muxer implements AutoCloseable {
    *     #writeSampleData}.
    * @throws MuxerException If an error occurs while adding track.
    */
+  @Override
   public int addTrack(Format format) throws MuxerException {
     return addTrack(/* sortKey= */ 1, format);
   }
@@ -483,7 +511,7 @@ public final class Mp4Muxer implements AutoCloseable {
   }
 
   /**
-   * Writes encoded sample data.
+   * {@inheritDoc}
    *
    * @param trackId The track id for which this sample is being written.
    * @param byteBuffer The encoded sample. The muxer takes ownership of the buffer if {@link
@@ -492,6 +520,7 @@ public final class Mp4Muxer implements AutoCloseable {
    * @param bufferInfo The {@link BufferInfo} related to this sample.
    * @throws MuxerException If an error occurs while writing data to the output file.
    */
+  @Override
   public void writeSampleData(int trackId, ByteBuffer byteBuffer, BufferInfo bufferInfo)
       throws MuxerException {
     Track track = trackIdToTrack.get(trackId);
@@ -512,7 +541,7 @@ public final class Mp4Muxer implements AutoCloseable {
   }
 
   /**
-   * Adds {@linkplain Metadata.Entry metadata} about the output file.
+   * {@inheritDoc}
    *
    * <p>List of supported {@linkplain Metadata.Entry metadata entries}:
    *
@@ -530,18 +559,12 @@ public final class Mp4Muxer implements AutoCloseable {
    *     IllegalArgumentException} is thrown if the {@linkplain Metadata.Entry metadata} is not
    *     supported.
    */
+  @Override
   public void addMetadataEntry(Metadata.Entry metadataEntry) {
     checkArgument(isMetadataSupported(metadataEntry), "Unsupported metadata");
     metadataCollector.addMetadata(metadataEntry);
   }
 
-  /**
-   * Closes the file.
-   *
-   * <p>The muxer cannot be used anymore once this method returns.
-   *
-   * @throws MuxerException If the muxer fails to finish writing the output.
-   */
   @Override
   public void close() throws MuxerException {
     @Nullable MuxerException exception = null;
@@ -592,7 +615,8 @@ public final class Mp4Muxer implements AutoCloseable {
               lastSampleDurationBehavior,
               sampleCopyEnabled,
               sampleBatchingEnabled,
-              attemptStreamableOutputEnabled);
+              attemptStreamableOutputEnabled,
+              freeSpaceAfterFtypInBytes);
     }
   }
 

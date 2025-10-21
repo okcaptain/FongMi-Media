@@ -17,8 +17,7 @@ package androidx.media3.muxer;
 
 import static androidx.media3.common.util.Assertions.checkArgument;
 
-import android.media.MediaCodec;
-import android.media.MediaCodec.BufferInfo;
+import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
@@ -39,6 +38,7 @@ import java.util.List;
   public final Deque<BufferInfo> pendingSamplesBufferInfo;
   public final Deque<ByteBuffer> pendingSamplesByteBuffer;
   public boolean hadKeyframe;
+  @Nullable public byte[] parsedCsd;
   public long endOfStreamTimestampUs;
 
   private final boolean sampleCopyEnabled;
@@ -76,13 +76,13 @@ import java.util.List;
             + " MediaCodec.BUFFER_FLAG_END_OF_STREAM flag");
     //  Skip empty samples.
     if (bufferInfo.size == 0 || byteBuffer.remaining() == 0) {
-      if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+      if ((bufferInfo.flags & C.BUFFER_FLAG_END_OF_STREAM) != 0) {
         endOfStreamTimestampUs = bufferInfo.presentationTimeUs;
       }
       return;
     }
 
-    if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) > 0) {
+    if ((bufferInfo.flags & C.BUFFER_FLAG_KEY_FRAME) > 0) {
       hadKeyframe = true;
     }
 
@@ -100,12 +100,9 @@ import java.util.List;
     }
 
     // Always copy the buffer info as it is retained until the track is finalized.
-    BufferInfo bufferInfoToAdd = new BufferInfo();
-    bufferInfoToAdd.set(
-        /* newOffset= */ byteBufferToAdd.position(),
-        /* newSize= */ byteBufferToAdd.remaining(),
-        bufferInfo.presentationTimeUs,
-        bufferInfo.flags);
+    BufferInfo bufferInfoToAdd =
+        new BufferInfo(
+            bufferInfo.presentationTimeUs, byteBufferToAdd.remaining(), bufferInfo.flags);
 
     pendingSamplesBufferInfo.addLast(bufferInfoToAdd);
     pendingSamplesByteBuffer.addLast(byteBufferToAdd);

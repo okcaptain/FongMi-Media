@@ -18,6 +18,7 @@ package androidx.media3.muxer;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.muxer.AnnexBUtils.doesSampleContainAnnexBNalUnits;
+import static androidx.media3.muxer.Av1ConfigUtil.createAv1CodecConfigurationRecord;
 import static androidx.media3.muxer.Boxes.BOX_HEADER_SIZE;
 import static androidx.media3.muxer.Boxes.LARGE_SIZE_BOX_HEADER_SIZE;
 import static androidx.media3.muxer.Boxes.getAxteBoxHeader;
@@ -27,8 +28,8 @@ import static androidx.media3.muxer.MuxerUtil.populateAuxiliaryTracksMetadata;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
-import android.media.MediaCodec.BufferInfo;
 import androidx.media3.common.Format;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Util;
 import androidx.media3.container.MdtaMetadataEntry;
 import com.google.common.collect.Range;
@@ -38,6 +39,7 @@ import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Writes all media samples into a single mdat box. */
@@ -58,6 +60,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
   private final List<Track> auxiliaryTracks;
   private final AtomicBoolean hasWrittenSamples;
   private final LinearByteBufferAllocator linearByteBufferAllocator;
+  private final int freeSpaceAfterFtypInBytes;
 
   // Stores location of the space reserved for the moov box at the beginning of the file (after ftyp
   // box)
@@ -86,6 +89,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
    * @param sampleCopyEnabled Whether sample copying is enabled.
    * @param sampleBatchingEnabled Whether sample batching is enabled.
    * @param attemptStreamableOutputEnabled Whether to attempt to write a streamable output.
+   * @param freeSpaceAfterFtypInBytes Free space to be reserved (in bytes) after the ftyp box.
    */
   public Mp4Writer(
       FileChannel fileChannel,
@@ -94,13 +98,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
       @Mp4Muxer.LastSampleDurationBehavior int lastSampleDurationBehavior,
       boolean sampleCopyEnabled,
       boolean sampleBatchingEnabled,
-      boolean attemptStreamableOutputEnabled) {
+      boolean attemptStreamableOutputEnabled,
+      int freeSpaceAfterFtypInBytes) {
     this.outputFileChannel = fileChannel;
     this.metadataCollector = metadataCollector;
     this.annexBToAvccConverter = annexBToAvccConverter;
     this.lastSampleDurationBehavior = lastSampleDurationBehavior;
     this.sampleCopyEnabled = sampleCopyEnabled;
     this.sampleBatchingEnabled = sampleBatchingEnabled;
+    this.freeSpaceAfterFtypInBytes =
+        freeSpaceAfterFtypInBytes > 0
+            ? freeSpaceAfterFtypInBytes
+            : (attemptStreamableOutputEnabled ? DEFAULT_MOOV_BOX_SIZE_BYTES : 0);
     tracks = new ArrayList<>();
     auxiliaryTracks = new ArrayList<>();
     hasWrittenSamples = new AtomicBoolean(false);
@@ -152,6 +161,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
    */
   public void writeSampleData(Track track, ByteBuffer byteBuffer, BufferInfo bufferInfo)
       throws IOException {
+    if (Objects.equals(track.format.sampleMimeType, MimeTypes.VIDEO_AV1)
+        && track.format.initializationData.isEmpty()
+        && track.parsedCsd == null) {
+      track.parsedCsd = createAv1CodecConfigurationRecord(byteBuffer.duplicate());
+    }
     track.writeSampleData(byteBuffer, bufferInfo);
     if (sampleBatchingEnabled) {
       doInterleave();
@@ -301,11 +315,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
     outputFileChannel.position(0L);
     outputFileChannel.write(Boxes.ftyp());
 
-    if (canWriteMoovAtStart) {
-      // Reserve some space for moov box by adding a free box.
+    if (freeSpaceAfterFtypInBytes > 0) {
       reservedMoovSpaceStart = outputFileChannel.position();
       outputFileChannel.write(
-          BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(DEFAULT_MOOV_BOX_SIZE_BYTES)));
+          BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(freeSpaceAfterFtypInBytes)));
       reservedMoovSpaceEnd = outputFileChannel.position();
     }
 
@@ -460,14 +473,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
       // Convert the H.264/H.265 samples from Annex-B format (output by MediaCodec) to
       // Avcc format (required by MP4 container).
-      if (doesSampleContainAnnexBNalUnits(checkNotNull(track.format.sampleMimeType))) {
+      if (doesSampleContainAnnexBNalUnits(track.format)) {
         currentSampleByteBuffer =
             annexBToAvccConverter.process(currentSampleByteBuffer, linearByteBufferAllocator);
-        currentSampleBufferInfo.set(
-            currentSampleByteBuffer.position(),
-            currentSampleByteBuffer.remaining(),
-            currentSampleBufferInfo.presentationTimeUs,
-            currentSampleBufferInfo.flags);
+        currentSampleBufferInfo =
+            new BufferInfo(
+                currentSampleBufferInfo.presentationTimeUs,
+                currentSampleByteBuffer.remaining(),
+                currentSampleBufferInfo.flags);
       }
 
       // If the original sample had 3 bytes NAL start code instead of 4 bytes, then after AnnexB to

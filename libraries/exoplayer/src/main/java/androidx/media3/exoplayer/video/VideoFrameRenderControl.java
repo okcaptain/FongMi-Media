@@ -17,12 +17,13 @@ package androidx.media3.exoplayer.video;
 
 import static androidx.media3.common.util.Assertions.checkArgument;
 import static androidx.media3.common.util.Assertions.checkNotNull;
+import static androidx.media3.exoplayer.video.VideoSink.RELEASE_FIRST_FRAME_WHEN_PREVIOUS_STREAM_PROCESSED;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
-import androidx.media3.common.VideoFrameProcessor;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.LongArrayQueue;
+import androidx.media3.common.util.SystemClock;
 import androidx.media3.common.util.TimedValueQueue;
 import androidx.media3.exoplayer.ExoPlaybackException;
 
@@ -43,8 +44,7 @@ import androidx.media3.exoplayer.ExoPlaybackException;
      * oldest frame that is available for rendering}.
      *
      * @param renderTimeNs The specific time, in nano seconds, that this frame should be rendered or
-     *     {@link VideoFrameProcessor#RENDER_OUTPUT_FRAME_IMMEDIATELY} if the frame needs to be
-     *     rendered immediately.
+     *     {@link SystemClock#nanoTime()} if the frame needs to be rendered immediately.
      * @param presentationTimeUs The frame's presentation time, in microseconds, which was announced
      *     with {@link VideoFrameRenderControl#onFrameAvailableForRendering(long)}.
      * @param isFirstFrame Whether this is the first frame of the stream.
@@ -101,7 +101,7 @@ import androidx.media3.exoplayer.ExoPlaybackException;
     lastPresentationTimeUs = C.TIME_UNSET;
   }
 
-  /** Flushes the renderer. */
+  /** Flushes the render control. */
   public void flush() {
     presentationTimestampsUs.clear();
     latestInputPresentationTimeUs = C.TIME_UNSET;
@@ -109,14 +109,10 @@ import androidx.media3.exoplayer.ExoPlaybackException;
     lastPresentationTimeUs = C.TIME_UNSET;
     if (streamStartPositionsUs.size() > 0) {
       // There is a pending streaming start position change. If seeking within the same stream, keep
-      // the pending start position with min timestamp to ensure the start position is applied on
+      // the pending start position with max timestamp to ensure the start position is applied on
       // the frames after flushing. Otherwise if seeking to another stream, a new start position
       // will be set before a new frame arrives so we'll be able to apply the new start position.
-      long lastStartPositionUs = getLastAndClear(streamStartPositionsUs);
-      // Input timestamps should always be positive because they are offset by ExoPlayer. Adding a
-      // position to the queue with timestamp 0 should therefore always apply it as long as it is
-      // the only position in the queue.
-      streamStartPositionsUs.add(/* timestamp= */ 0, lastStartPositionUs);
+      outputStreamStartPositionUs = getLastAndClear(streamStartPositionsUs);
     }
     if (videoSizes.size() > 0) {
       // Do not clear the last pending video size, we still want to report the size change after a
@@ -136,9 +132,10 @@ import androidx.media3.exoplayer.ExoPlaybackException;
   public void render(long positionUs, long elapsedRealtimeUs) throws ExoPlaybackException {
     while (!presentationTimestampsUs.isEmpty()) {
       long presentationTimeUs = presentationTimestampsUs.element();
-      // Check whether this buffer comes with a new stream start position.
-      if (maybeUpdateOutputStreamStartPosition(presentationTimeUs)) {
-        videoFrameReleaseControl.onProcessedStreamChange();
+      // Check whether this buffer comes with a new stream.
+      if (maybeUpdateOutputStream(presentationTimeUs)) {
+        videoFrameReleaseControl.onStreamChanged(
+            RELEASE_FIRST_FRAME_WHEN_PREVIOUS_STREAM_PROCESSED);
       }
       @VideoFrameReleaseControl.FrameReleaseAction
       int frameReleaseAction =
@@ -181,10 +178,21 @@ import androidx.media3.exoplayer.ExoPlaybackException;
         new VideoSize(width, height));
   }
 
-  public void onStreamStartPositionChanged(long streamStartPositionUs) {
-    streamStartPositionsUs.add(
-        latestInputPresentationTimeUs == C.TIME_UNSET ? 0 : latestInputPresentationTimeUs + 1,
-        streamStartPositionUs);
+  public void onStreamChanged(
+      @VideoSink.FirstFrameReleaseInstruction int firstFrameReleaseInstruction,
+      long streamStartPositionUs) {
+    if (presentationTimestampsUs.isEmpty()) {
+      videoFrameReleaseControl.onStreamChanged(firstFrameReleaseInstruction);
+      outputStreamStartPositionUs = streamStartPositionUs;
+    } else {
+      // Add a start position to the queue with a large negative timestamp to always apply it as
+      // long as it is the only one in the queue.
+      streamStartPositionsUs.add(
+          latestInputPresentationTimeUs == C.TIME_UNSET
+              ? Long.MIN_VALUE / 2
+              : latestInputPresentationTimeUs + 1,
+          streamStartPositionUs);
+    }
   }
 
   /**
@@ -205,6 +213,13 @@ import androidx.media3.exoplayer.ExoPlaybackException;
    * this method, the end of input signal is ignored.
    */
   public void signalEndOfInput() {
+    if (latestInputPresentationTimeUs == C.TIME_UNSET) {
+      // If EOS is signalled right after a flush without receiving a frame (could happen with frame
+      // replaying as available frame is not reported to the render control), set the latest input
+      // and output timestamp to end of source to ensure isEnded() returns true.
+      latestInputPresentationTimeUs = C.TIME_END_OF_SOURCE;
+      latestOutputPresentationTimeUs = C.TIME_END_OF_SOURCE;
+    }
     lastPresentationTimeUs = latestInputPresentationTimeUs;
   }
 
@@ -235,13 +250,13 @@ import androidx.media3.exoplayer.ExoPlaybackException;
     }
     long renderTimeNs =
         shouldRenderImmediately
-            ? VideoFrameProcessor.RENDER_OUTPUT_FRAME_IMMEDIATELY
+            ? SystemClock.DEFAULT.nanoTime()
             : videoFrameReleaseInfo.getReleaseTimeNs();
     frameRenderer.renderFrame(
         renderTimeNs, presentationTimeUs, videoFrameReleaseControl.onFrameReleasedIsFirstFrame());
   }
 
-  private boolean maybeUpdateOutputStreamStartPosition(long presentationTimeUs) {
+  private boolean maybeUpdateOutputStream(long presentationTimeUs) {
     @Nullable
     Long newOutputStreamStartPositionUs = streamStartPositionsUs.pollFloor(presentationTimeUs);
     if (newOutputStreamStartPositionUs != null

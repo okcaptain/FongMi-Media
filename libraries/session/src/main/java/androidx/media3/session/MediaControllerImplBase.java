@@ -15,6 +15,7 @@
  */
 package androidx.media3.session;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkArgument;
 import static androidx.media3.common.util.Assertions.checkIndex;
 import static androidx.media3.common.util.Assertions.checkNotNull;
@@ -45,7 +46,6 @@ import android.os.Message;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
-import android.util.Pair;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -119,6 +119,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
   private final ListenerSet<Listener> listeners;
   private final FlushCommandQueueHandler flushCommandQueueHandler;
   private final ArraySet<Integer> pendingMaskingSequencedFutureNumbers;
+  private final Handler fallbackPlaybackInfoUpdateHandler;
 
   @Nullable private SessionToken connectedToken;
   @Nullable private SessionServiceConnection serviceConnection;
@@ -143,7 +144,6 @@ import org.checkerframework.checker.nullness.qual.NonNull;
   private long currentPositionMs;
   private long lastSetPlayWhenReadyCalledTimeMs;
   @Nullable private PlayerInfo pendingPlayerInfo;
-  @Nullable private BundlingExclusions pendingBundlingExclusions;
   private Bundle sessionExtras;
 
   public MediaControllerImplBase(
@@ -171,6 +171,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
             applicationLooper,
             Clock.DEFAULT,
             (listener, flags) -> listener.onEvents(getInstance(), new Events(flags)));
+    fallbackPlaybackInfoUpdateHandler = new Handler(applicationLooper);
 
     // Initialize members
     this.instance = instance;
@@ -282,6 +283,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
     }
     released = true;
     connectedToken = null;
+    fallbackPlaybackInfoUpdateHandler.removeCallbacksAndMessages(null);
     flushCommandQueueHandler.release();
     this.iSession = null;
     if (iSession != null) {
@@ -385,6 +387,10 @@ import org.checkerframework.checker.nullness.qual.NonNull;
               new SessionResult(SessionResult.RESULT_INFO_SKIPPED));
       int sequenceNumber = result.getSequenceNumber();
       if (addToPendingMaskingOperations) {
+        if (pendingMaskingSequencedFutureNumbers.isEmpty()) {
+          // First pending operation, start masking PlayerInfo.
+          pendingPlayerInfo = playerInfo;
+        }
         pendingMaskingSequencedFutureNumbers.add(sequenceNumber);
       }
       try {
@@ -415,7 +421,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
       return;
     }
 
-    if (Util.SDK_INT >= 31 && platformController != null) {
+    if (SDK_INT >= 31 && platformController != null) {
       // Ensure the platform session gets allow-listed to start a foreground service after receiving
       // the play command.
       platformController
@@ -2533,7 +2539,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
 
   private boolean requestConnectToService() {
     int flags =
-        Util.SDK_INT >= 29
+        SDK_INT >= 29
             ? Context.BIND_AUTO_CREATE | Context.BIND_INCLUDE_CAPABILITIES
             : Context.BIND_AUTO_CREATE;
 
@@ -2555,12 +2561,15 @@ import org.checkerframework.checker.nullness.qual.NonNull;
     //    If a service wants to keep running, it should be either foreground service or
     //    bound service. But there had been request for the feature for system apps
     //    and using bindService() will be better fit with it.
-    boolean result = context.bindService(intent, serviceConnection, flags);
-    if (!result) {
+    try {
+      if (context.bindService(intent, serviceConnection, flags)) {
+        return true;
+      }
       Log.w(TAG, "bind to " + token + " failed");
-      return false;
+    } catch (SecurityException e) {
+      Log.w(TAG, "bind to " + token + " not allowed", e);
     }
-    return true;
+    return false;
   }
 
   private boolean requestConnectToSession(Bundle connectionHints) {
@@ -2641,7 +2650,24 @@ import org.checkerframework.checker.nullness.qual.NonNull;
     // masking operation on the application looper to ensure it's executed in order with other
     // updates sent to the application looper.
     sequencedFutureManager.setFutureResult(seq, futureResult);
-    getInstance().runOnApplicationLooper(() -> pendingMaskingSequencedFutureNumbers.remove(seq));
+    getInstance()
+        .runOnApplicationLooper(
+            () -> {
+              pendingMaskingSequencedFutureNumbers.remove(seq);
+              if (connectedToken != null
+                  && connectedToken.getInterfaceVersion() < 5
+                  && pendingMaskingSequencedFutureNumbers.isEmpty()) {
+                // Older session versions didn't reliably send a final PlayerInfo update. As a
+                // fallback, assume no actual final update is coming after 500ms.
+                fallbackPlaybackInfoUpdateHandler.postDelayed(
+                    () -> {
+                      if (pendingPlayerInfo != null) {
+                        onPlayerInfoChanged(pendingPlayerInfo, BundlingExclusions.NONE);
+                      }
+                    },
+                    500);
+              }
+            });
   }
 
   void onConnected(ConnectionState result) {
@@ -2764,36 +2790,29 @@ import org.checkerframework.checker.nullness.qual.NonNull;
     if (!isConnected()) {
       return;
     }
-    if (pendingPlayerInfo != null && pendingBundlingExclusions != null) {
-      Pair<PlayerInfo, BundlingExclusions> mergedPlayerInfoUpdate =
+    if (pendingPlayerInfo != null) {
+      pendingPlayerInfo =
           mergePlayerInfo(
-              pendingPlayerInfo,
-              pendingBundlingExclusions,
-              newPlayerInfo,
-              bundlingExclusions,
-              intersectedPlayerCommands);
-      newPlayerInfo = mergedPlayerInfoUpdate.first;
-      bundlingExclusions = mergedPlayerInfoUpdate.second;
-    }
-    pendingPlayerInfo = null;
-    pendingBundlingExclusions = null;
-    if (!pendingMaskingSequencedFutureNumbers.isEmpty()) {
-      // We are still waiting for all pending masking operations to be handled.
-      pendingPlayerInfo = newPlayerInfo;
-      pendingBundlingExclusions = bundlingExclusions;
-      return;
+              pendingPlayerInfo, newPlayerInfo, bundlingExclusions, intersectedPlayerCommands);
+      if (pendingMaskingSequencedFutureNumbers.isEmpty()) {
+        // Finish masking.
+        newPlayerInfo = pendingPlayerInfo;
+        bundlingExclusions = BundlingExclusions.NONE;
+        pendingPlayerInfo = null;
+      } else {
+        // We are still waiting for all pending masking operations to be handled.
+        return;
+      }
     }
     PlayerInfo oldPlayerInfo = playerInfo;
     // Assigning class variable now so that all getters called from listeners see the updated value.
     // But we need to use a local final variable to ensure listeners get consistent parameters.
     playerInfo =
         mergePlayerInfo(
-                oldPlayerInfo,
-                /* oldBundlingExclusions= */ BundlingExclusions.NONE,
-                newPlayerInfo,
-                /* newBundlingExclusions= */ bundlingExclusions,
-                intersectedPlayerCommands)
-            .first;
+            oldPlayerInfo,
+            newPlayerInfo,
+            /* newBundlingExclusions= */ bundlingExclusions,
+            intersectedPlayerCommands);
     PlayerInfo finalPlayerInfo = playerInfo;
 
     @Nullable
@@ -3164,6 +3183,7 @@ import org.checkerframework.checker.nullness.qual.NonNull;
     timeline.getPeriod(newPeriodIndex, newPeriod);
     Window newWindow = new Window();
     timeline.getWindow(newPeriod.windowIndex, newWindow);
+    long positionInWindowMs = usToMs(newPeriod.positionInWindowUs + newPositionUs);
     PositionInfo newPositionInfo =
         new PositionInfo(
             /* windowUid= */ null,
@@ -3171,8 +3191,8 @@ import org.checkerframework.checker.nullness.qual.NonNull;
             newWindow.mediaItem,
             /* periodUid= */ null,
             newPeriodIndex,
-            /* positionMs= */ usToMs(newPeriod.positionInWindowUs + newPositionUs),
-            /* contentPositionMs= */ usToMs(newPeriod.positionInWindowUs + newPositionUs),
+            /* positionMs= */ positionInWindowMs,
+            /* contentPositionMs= */ positionInWindowMs,
             /* adGroupIndex= */ C.INDEX_UNSET,
             /* adIndexInAdGroup= */ C.INDEX_UNSET);
     playerInfo =
@@ -3188,16 +3208,13 @@ import org.checkerframework.checker.nullness.qual.NonNull;
                   /* isPlayingAd= */ false,
                   /* eventTimeMs= */ SystemClock.elapsedRealtime(),
                   newWindow.getDurationMs(),
-                  /* bufferedPositionMs= */ usToMs(newPeriod.positionInWindowUs + newPositionUs),
+                  /* bufferedPositionMs= */ positionInWindowMs,
                   /* bufferedPercentage= */ calculateBufferedPercentage(
-                      /* bufferedPositionMs= */ usToMs(
-                          newPeriod.positionInWindowUs + newPositionUs),
-                      newWindow.getDurationMs()),
+                      positionInWindowMs, newWindow.getDurationMs()),
                   /* totalBufferedDurationMs= */ 0,
                   /* currentLiveOffsetMs= */ C.TIME_UNSET,
                   /* contentDurationMs= */ C.TIME_UNSET,
-                  /* contentBufferedPositionMs= */ usToMs(
-                      newPeriod.positionInWindowUs + newPositionUs)));
+                  /* contentBufferedPositionMs= */ positionInWindowMs));
     } else {
       // A forward seek within the playing period (timeline did not change).
       long maskedTotalBufferedDurationUs =
@@ -3205,7 +3222,8 @@ import org.checkerframework.checker.nullness.qual.NonNull;
               0,
               Util.msToUs(playerInfo.sessionPositionInfo.totalBufferedDurationMs)
                   - (newPositionUs - oldPositionUs));
-      long maskedBufferedPositionUs = newPositionUs + maskedTotalBufferedDurationUs;
+      long maskedBufferedPositionInWindowMs =
+          usToMs(newPeriod.positionInWindowUs + newPositionUs + maskedTotalBufferedDurationUs);
 
       playerInfo =
           playerInfo.copyWithSessionPositionInfo(
@@ -3214,13 +3232,13 @@ import org.checkerframework.checker.nullness.qual.NonNull;
                   /* isPlayingAd= */ false,
                   /* eventTimeMs= */ SystemClock.elapsedRealtime(),
                   newWindow.getDurationMs(),
-                  /* bufferedPositionMs= */ usToMs(maskedBufferedPositionUs),
+                  /* bufferedPositionMs= */ maskedBufferedPositionInWindowMs,
                   /* bufferedPercentage= */ calculateBufferedPercentage(
-                      usToMs(maskedBufferedPositionUs), newWindow.getDurationMs()),
+                      maskedBufferedPositionInWindowMs, newWindow.getDurationMs()),
                   /* totalBufferedDurationMs= */ usToMs(maskedTotalBufferedDurationUs),
                   /* currentLiveOffsetMs= */ C.TIME_UNSET,
                   /* contentDurationMs= */ C.TIME_UNSET,
-                  /* contentBufferedPositionMs= */ usToMs(maskedBufferedPositionUs)));
+                  /* contentBufferedPositionMs= */ maskedBufferedPositionInWindowMs));
     }
     return playerInfo;
   }

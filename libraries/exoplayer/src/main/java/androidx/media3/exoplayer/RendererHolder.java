@@ -38,6 +38,7 @@ import androidx.media3.exoplayer.source.SampleStream;
 import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection;
 import androidx.media3.exoplayer.trackselection.TrackSelectorResult;
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener;
 import java.io.IOException;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
@@ -80,12 +81,6 @@ import java.util.Objects;
 
   public boolean isPrewarming() {
     return isPrimaryRendererPrewarming() || isSecondaryRendererPrewarming();
-  }
-
-  public boolean isRendererPrewarming(int id) {
-    boolean isPrewarmingPrimaryRenderer = isPrimaryRendererPrewarming() && id == index;
-    boolean isPrewarmingSecondaryRenderer = isSecondaryRendererPrewarming() && id != index;
-    return isPrewarmingPrimaryRenderer || isPrewarmingSecondaryRenderer;
   }
 
   private boolean isPrimaryRendererPrewarming() {
@@ -318,6 +313,21 @@ import java.util.Objects;
   }
 
   /**
+   * Returns whether a {@link Renderer} is prewarming and enabled on a {@link MediaPeriodHolder
+   * media period}.
+   *
+   * @param period The {@link MediaPeriodHolder media period} to check.
+   */
+  public boolean isPrewarmingPeriod(MediaPeriodHolder period) {
+    boolean isPrimaryRendererPrewarming =
+        isPrimaryRendererPrewarming() && getRendererReadingFromPeriod(period) == primaryRenderer;
+    boolean isSecondaryRendererPrewarming =
+        isSecondaryRendererPrewarming()
+            && getRendererReadingFromPeriod(period) == secondaryRenderer;
+    return isPrimaryRendererPrewarming || isSecondaryRendererPrewarming;
+  }
+
+  /**
    * Returns whether the {@link Renderer renderers} are still reading a {@link MediaPeriodHolder
    * media period}.
    *
@@ -527,6 +537,24 @@ import java.util.Objects;
       throws ExoPlaybackException {
     Renderer renderer = checkNotNull(getRendererReadingFromPeriod(mediaPeriod));
     renderer.handleMessage(messageType, message);
+  }
+
+  /**
+   * Enables or disables scrubbing mode through a {@link Renderer#handleMessage} with {@link
+   * Renderer#MSG_SET_SCRUBBING_MODE}.
+   *
+   * <p>If {@code scrubbingModeParameters} is {@code null} then scrubbing mode will be disabled.
+   *
+   * @param scrubbingModeParameters The {@link ScrubbingModeParameters} to set unto the {@link
+   *     Renderer}.
+   * @see Renderer#MSG_SET_SCRUBBING_MODE
+   */
+  public void setScrubbingMode(@Nullable ScrubbingModeParameters scrubbingModeParameters)
+      throws ExoPlaybackException {
+    primaryRenderer.handleMessage(Renderer.MSG_SET_SCRUBBING_MODE, scrubbingModeParameters);
+    if (secondaryRenderer != null) {
+      secondaryRenderer.handleMessage(Renderer.MSG_SET_SCRUBBING_MODE, scrubbingModeParameters);
+    }
   }
 
   /**
@@ -772,6 +800,19 @@ import java.util.Objects;
       checkNotNull(secondaryRenderer).handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, videoOutput);
     } else {
       primaryRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, videoOutput);
+    }
+  }
+
+  public void setVideoFrameMetadataListener(VideoFrameMetadataListener videoFrameMetadataListener)
+      throws ExoPlaybackException {
+    if (getTrackType() != TRACK_TYPE_VIDEO) {
+      return;
+    }
+    primaryRenderer.handleMessage(
+        Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER, videoFrameMetadataListener);
+    if (secondaryRenderer != null) {
+      secondaryRenderer.handleMessage(
+          Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER, videoFrameMetadataListener);
     }
   }
 

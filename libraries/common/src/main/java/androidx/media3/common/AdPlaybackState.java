@@ -596,6 +596,21 @@ public final class AdPlaybackState {
       return C.INDEX_UNSET;
     }
 
+    /** Returns a safe copy with all array fields copied into the new instance as new arrays. */
+    public AdGroup copy() {
+      return new AdGroup(
+          timeUs,
+          count,
+          originalCount,
+          Arrays.copyOf(states, states.length),
+          Arrays.copyOf(mediaItems, mediaItems.length),
+          Arrays.copyOf(durationsUs, durationsUs.length),
+          contentResumeOffsetUs,
+          isServerSideInserted,
+          Arrays.copyOf(ids, ids.length),
+          isPlaceholder);
+    }
+
     @CheckResult
     private static @AdState int[] copyStatesWithSpaceForAdCount(@AdState int[] states, int count) {
       int oldStateCount = states.length;
@@ -865,7 +880,10 @@ public final class AdPlaybackState {
             || !getAdGroup(index).shouldPlayAdGroup())) {
       index++;
     }
-    return index < adGroupCount ? index : C.INDEX_UNSET;
+    return index < adGroupCount
+            && (periodDurationUs == C.TIME_UNSET || getAdGroup(index).timeUs <= periodDurationUs)
+        ? index
+        : C.INDEX_UNSET;
   }
 
   /** Returns whether the specified ad has been marked as in {@link #AD_STATE_ERROR}. */
@@ -937,6 +955,20 @@ public final class AdPlaybackState {
     }
     AdGroup[] adGroups = Util.nullSafeArrayCopy(this.adGroups, this.adGroups.length);
     adGroups[adjustedIndex] = this.adGroups[adjustedIndex].withAdCount(adCount);
+    return new AdPlaybackState(
+        adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
+  }
+
+  /**
+   * Returns an new instance that is a safe deep copy of this instance in case an immutable object
+   * is used for {@link #adsId}.
+   */
+  @CheckResult
+  public AdPlaybackState copy() {
+    AdGroup[] adGroups = new AdGroup[this.adGroups.length];
+    for (int i = 0; i < adGroups.length; i++) {
+      adGroups[i] = this.adGroups[i].copy();
+    }
     return new AdPlaybackState(
         adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
   }
@@ -1156,6 +1188,27 @@ public final class AdPlaybackState {
       return new AdPlaybackState(
           adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
     }
+  }
+
+  /**
+   * Returns an instance with ad groups removed until and excluding the first post roll ad group or
+   * the first ad group with {@link AdGroup#timeUs} larger than the given time, in microseconds.
+   *
+   * <p>Any ad group with {@link AdGroup#timeUs} set to {@link C#TIME_END_OF_SOURCE} is considered a
+   * post roll ad group.
+   */
+  @CheckResult
+  public AdPlaybackState withRemovedAdGroupCountBefore(long timeUs) {
+    int newRemovedAdGroupCount;
+    for (newRemovedAdGroupCount = removedAdGroupCount;
+        newRemovedAdGroupCount < adGroupCount;
+        newRemovedAdGroupCount++) {
+      AdGroup adGroup = getAdGroup(newRemovedAdGroupCount);
+      if (timeUs <= adGroup.timeUs || adGroup.timeUs == C.TIME_END_OF_SOURCE) {
+        break;
+      }
+    }
+    return withRemovedAdGroupCount(newRemovedAdGroupCount);
   }
 
   /**

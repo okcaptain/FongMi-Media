@@ -16,15 +16,20 @@
 package androidx.media3.exoplayer.dash.e2etest;
 
 import static androidx.media3.common.util.Assertions.checkNotNull;
+import static androidx.media3.test.utils.WebServerDispatcher.NOT_FOUND_BODY;
+import static androidx.media3.test.utils.WebServerDispatcher.getRequestPath;
 import static androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance;
+import static androidx.media3.test.utils.robolectric.TestPlayerRunHelper.play;
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import android.content.Context;
+import android.content.res.AssetManager;
 import android.graphics.SurfaceTexture;
 import android.net.Uri;
 import android.view.Surface;
@@ -33,7 +38,11 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.ParserException;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.ConditionVariable;
+import androidx.media3.datasource.AssetDataSource;
 import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.DataSourceUtil;
+import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.ResolvingDataSource;
 import androidx.media3.exoplayer.DecoderCounters;
@@ -49,25 +58,36 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.source.LoadEventInfo;
 import androidx.media3.exoplayer.source.MediaLoadData;
 import androidx.media3.exoplayer.source.chunk.BundledChunkExtractor;
+import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.test.utils.CapturingRenderersFactory;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeClock;
 import androidx.media3.test.utils.ThrowingSubtitleParserFactory;
+import androidx.media3.test.utils.WebServerDispatcher;
 import androidx.media3.test.utils.robolectric.PlaybackOutput;
 import androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig;
 import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.robolectric.annotation.Config;
 
 /** End-to-end tests using DASH samples. */
 @RunWith(AndroidJUnit4.class)
@@ -75,7 +95,9 @@ public final class DashPlaybackTest {
 
   @Rule
   public ShadowMediaCodecConfig mediaCodecConfig =
-      ShadowMediaCodecConfig.forAllSupportedMimeTypes();
+      ShadowMediaCodecConfig.withAllDefaultSupportedCodecs();
+
+  @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   @Test
   public void webvttStandaloneFile() throws Exception {
@@ -252,6 +274,110 @@ public final class DashPlaybackTest {
 
     DumpFileAsserts.assertOutput(
         applicationContext, playbackOutput, "playbackdumps/dash/webvtt-in-mp4.dump");
+  }
+
+  /**
+   * Regression test for <a href="https://github.com/androidx/media/issues/2517">issue #2517</a>.
+   *
+   * <p>The test DASH manifest contains 5 1s segments of video and text data. The first, second and
+   * fifth text segments have subtitle data while the third and fourth are empty.
+   *
+   * <p>The test returns a 404 response for the second text segment until this failure is handled by
+   * {@link TextRenderer}, at which point it starts resolving but blocks loading the fifth segment.
+   * This ensures {@link TextRenderer} sees an error, and {@link TextRenderer#isReady()} is called
+   * with no future subtitle data when entering the third segment. Without the fix, the test hangs
+   * at this transition.
+   */
+  @Test
+  public void webvttInMp4_transientLoadError_playbackContinues() throws Exception {
+    MockWebServer mockWebServer = new MockWebServer();
+    WebServerDispatcher webServerDispatcher =
+        WebServerDispatcher.forResources(
+            mockWebServerResourcesFromAssetsDirectory(
+                "media/dash/webvtt-in-mp4-multiple-segments"));
+    AtomicInteger secondSubtitleFailureCount = new AtomicInteger();
+    AtomicBoolean secondSubtitleResolves = new AtomicBoolean();
+    ConditionVariable fifthSubtitleLoad = new ConditionVariable();
+    Dispatcher blockingDispatcher =
+        new Dispatcher() {
+          @Override
+          public MockResponse dispatch(RecordedRequest recordedRequest)
+              throws InterruptedException {
+            if (getRequestPath(recordedRequest).endsWith("text5.m4s")) {
+              fifthSubtitleLoad.block();
+            }
+            if (getRequestPath(recordedRequest).endsWith("text2.m4s")
+                && !secondSubtitleResolves.get()) {
+              secondSubtitleFailureCount.incrementAndGet();
+              return new MockResponse().setBody(NOT_FOUND_BODY).setResponseCode(404);
+            }
+            return webServerDispatcher.dispatch(recordedRequest);
+          }
+        };
+    mockWebServer.setDispatcher(blockingDispatcher);
+
+    Context applicationContext = ApplicationProvider.getApplicationContext();
+    ExoPlayer player =
+        new ExoPlayer.Builder(applicationContext)
+            .setClock(new FakeClock(/* isAutoAdvancing= */ true))
+            .build();
+    Surface surface = new Surface(new SurfaceTexture(/* texName= */ 1));
+    player.setVideoSurface(surface);
+    AtomicBoolean secondSubtitleChunkLoaded = new AtomicBoolean();
+    player.addAnalyticsListener(
+        new AnalyticsListener() {
+          @Override
+          public void onLoadCompleted(
+              EventTime eventTime, LoadEventInfo loadEventInfo, MediaLoadData mediaLoadData) {
+            if (loadEventInfo.dataSpec.uri.getPath().endsWith("text2.m4s")) {
+              secondSubtitleChunkLoaded.set(true);
+            }
+          }
+        });
+    // Ensure the subtitle track is selected.
+    DefaultTrackSelector trackSelector =
+        checkNotNull((DefaultTrackSelector) player.getTrackSelector());
+    trackSelector.setParameters(
+        trackSelector
+            .buildUponParameters()
+            .setPreferredTextLanguage("en")
+            .setSelectUndeterminedTextLanguage(true));
+    // Deliberately don't capture the video data, since we don't care about it for this test.
+    PlaybackOutput playbackOutput = PlaybackOutput.registerWithoutRendererCapture(player);
+
+    player.setMediaItem(MediaItem.fromUri(mockWebServer.url("manifest.mpd").toString()));
+    player.prepare();
+
+    // Ensure the loading error is processed by the player, and the segment is subsequently
+    // successfully loaded, before playback starts (otherwise in the test playback progresses too
+    // quickly, and completes (without any subtitles) before the load error is encountered). The
+    // 4 load errors allow for the default 3 retries, plus a final failure which propagates to
+    // TextRenderer.
+    advance(player)
+        .ignoringNonFatalErrors()
+        .untilBackgroundThreadCondition(() -> secondSubtitleFailureCount.get() == 4);
+    secondSubtitleResolves.set(true);
+    advance(player)
+        .ignoringNonFatalErrors()
+        .untilBackgroundThreadCondition(secondSubtitleChunkLoaded::get);
+    player.play();
+
+    // Progress past the transition into the third segment (which is the first empty one), then
+    // allow the fifth (non-empty) subtitle segment to load. This ensures we enter the third segment
+    // with no future subtitle data in TextRenderer.
+    advance(player)
+        .ignoringNonFatalErrors()
+        .untilPosition(/* mediaItemIndex= */ 0, /* positionMs= */ 3500);
+    fifthSubtitleLoad.open();
+    advance(player).ignoringNonFatalErrors().untilState(Player.STATE_ENDED);
+    player.release();
+    surface.release();
+    mockWebServer.close();
+
+    DumpFileAsserts.assertOutput(
+        applicationContext,
+        playbackOutput,
+        "playbackdumps/dash/webvtt-in-mp4-multiple-segments.textonly.dump");
   }
 
   @Test
@@ -548,15 +674,16 @@ public final class DashPlaybackTest {
    * and not present some images. That will cause the test to fail.
    */
   @Test
+  // Set the screen size equal to the size of a single thumbnail, to check the whole grid is not
+  // scaled down to match the screen size.
+  @Config(qualifiers = "w256dp-h144dp")
   public void playThumbnailGrid() throws Exception {
     Context applicationContext = ApplicationProvider.getApplicationContext();
-    CapturingRenderersFactory capturingRenderersFactory =
-        new CapturingRenderersFactory(applicationContext);
     ExoPlayer player =
-        new ExoPlayer.Builder(applicationContext, capturingRenderersFactory)
+        new ExoPlayer.Builder(applicationContext)
             .setClock(new FakeClock(/* isAutoAdvancing= */ true))
             .build();
-    PlaybackOutput playbackOutput = PlaybackOutput.register(player, capturingRenderersFactory);
+    PlaybackOutput playbackOutput = PlaybackOutput.registerWithoutRendererCapture(player);
 
     player.setMediaItem(MediaItem.fromUri("asset:///media/dash/thumbnails/sample.mpd"));
     player.prepare();
@@ -569,15 +696,16 @@ public final class DashPlaybackTest {
   }
 
   @Test
+  // Set the screen size equal to the size of a single thumbnail, to check the whole grid is not
+  // scaled down to match the screen size.
+  @Config(qualifiers = "w256dp-h144dp")
   public void playThumbnailGrid_withSeekAfterEoS() throws Exception {
     Context applicationContext = ApplicationProvider.getApplicationContext();
-    CapturingRenderersFactory capturingRenderersFactory =
-        new CapturingRenderersFactory(applicationContext);
     ExoPlayer player =
-        new ExoPlayer.Builder(applicationContext, capturingRenderersFactory)
+        new ExoPlayer.Builder(applicationContext)
             .setClock(new FakeClock(/* isAutoAdvancing= */ true))
             .build();
-    PlaybackOutput playbackOutput = PlaybackOutput.register(player, capturingRenderersFactory);
+    PlaybackOutput playbackOutput = PlaybackOutput.registerWithoutRendererCapture(player);
     player.setMediaItem(MediaItem.fromUri("asset:///media/dash/thumbnails/sample.mpd"));
     player.seekTo(55_000L);
     player.prepare();
@@ -795,6 +923,55 @@ public final class DashPlaybackTest {
     // Every started load should be completed.
     assertThat(loadCompletedUris).containsExactlyElementsIn(loadStartedUris);
     assertThat(loadCompletedDataSpecUris).containsExactlyElementsIn(loadStartedUris);
+  }
+
+  @Test
+  public void seekToEnd_afterLoadingFinished_doesNotLoadAgain() throws Exception {
+    Context applicationContext = ApplicationProvider.getApplicationContext();
+    ExoPlayer player =
+        new ExoPlayer.Builder(applicationContext)
+            .setClock(new FakeClock(/* isAutoAdvancing= */ true))
+            .build();
+    Player.Listener listener = mock(Player.Listener.class);
+    Surface surface = new Surface(new SurfaceTexture(/* texName= */ 1));
+    player.setVideoSurface(surface);
+    player.setMediaItem(MediaItem.fromUri("asset:///media/dash/standalone-webvtt/sample.mpd"));
+    player.prepare();
+    advance(player).untilFullyBuffered();
+
+    player.addListener(listener);
+    player.seekTo(player.getDuration());
+    play(player).untilState(Player.STATE_ENDED);
+    player.release();
+    surface.release();
+
+    verify(listener, never()).onIsLoadingChanged(true);
+  }
+
+  private static ImmutableList<WebServerDispatcher.Resource>
+      mockWebServerResourcesFromAssetsDirectory(String assetDirectory) throws IOException {
+    Context context = ApplicationProvider.getApplicationContext();
+    AssetManager assetManager = context.getAssets();
+    String[] contents = assetManager.list(assetDirectory);
+    AssetDataSource assetDataSource =
+        new AssetDataSource(ApplicationProvider.getApplicationContext());
+    ImmutableList.Builder<WebServerDispatcher.Resource> resources =
+        ImmutableList.builderWithExpectedSize(contents.length);
+    for (String asset : contents) {
+      try {
+        Uri assetUri =
+            new Uri.Builder().scheme("asset").appendPath(assetDirectory).appendPath(asset).build();
+        assetDataSource.open(new DataSpec(assetUri));
+        resources.add(
+            new WebServerDispatcher.Resource.Builder()
+                .setPath(asset)
+                .setData(DataSourceUtil.readToEnd(assetDataSource))
+                .build());
+      } finally {
+        assetDataSource.close();
+      }
+    }
+    return resources.build();
   }
 
   private static final class AnalyticsListenerImpl implements AnalyticsListener {

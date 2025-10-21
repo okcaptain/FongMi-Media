@@ -15,6 +15,7 @@
  */
 package androidx.media3.session;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.test.session.common.TestUtils.TIMEOUT_MS;
 import static androidx.media3.test.session.common.TestUtils.getEventsAsList;
 import static com.google.common.truth.Truth.assertThat;
@@ -23,6 +24,7 @@ import static org.junit.Assume.assumeTrue;
 
 import android.content.Context;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.support.v4.media.session.MediaControllerCompat;
@@ -37,7 +39,6 @@ import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.ConditionVariable;
-import androidx.media3.common.util.Util;
 import androidx.media3.session.legacy.MediaMetadataCompat;
 import androidx.media3.test.session.R;
 import androidx.media3.test.session.common.CommonConstants;
@@ -349,7 +350,7 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
     // We need to trigger MediaControllerCompat.Callback.onAudioInfoChanged in order to raise the
     // onAudioAttributesChanged() callback. In API 21 and 22, onAudioInfoChanged is not called when
     // playback is changed to local.
-    assumeTrue(Util.SDK_INT > 22);
+    assumeTrue(SDK_INT > 22);
 
     session.setPlaybackToRemote(
         /* volumeControl= */ VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE,
@@ -414,7 +415,7 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
           }
         };
     threadTestRule.getHandler().postAndSync(() -> controller.addListener(listener));
-    String testRoutingSessionId = Util.SDK_INT >= 30 ? "route" : null;
+    String testRoutingSessionId = SDK_INT >= 30 ? "route" : null;
 
     session.setPlaybackToRemote(
         /* volumeControl= */ VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE,
@@ -574,6 +575,7 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
             .setSessionCommand(new SessionCommand("command2", Bundle.EMPTY))
             .setEnabled(true)
             .setSlots(CommandButton.SLOT_FORWARD, CommandButton.SLOT_OVERFLOW)
+            .setIconUri(Uri.parse("content://my_icon"))
             .build();
     ConditionVariable onMediaButtonPreferencesChangedCalled = new ConditionVariable();
     List<List<CommandButton>> onMediaButtonPreferencesChangedArguments = new ArrayList<>();
@@ -600,6 +602,8 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
     extras2.putString("key", "value-2");
     extras2.putInt(
         MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT, CommandButton.ICON_FAST_FORWARD);
+    extras2.putString(
+        MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT, "content://my_icon");
     PlaybackStateCompat.CustomAction customAction2 =
         new PlaybackStateCompat.CustomAction.Builder(
                 "command2", "button2", /* icon= */ R.drawable.media3_icon_fast_forward)

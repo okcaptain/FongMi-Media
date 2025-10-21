@@ -26,6 +26,7 @@ import static org.junit.Assert.fail;
 import android.net.Uri;
 import android.os.Bundle;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import java.lang.reflect.Field;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -322,6 +323,61 @@ public class AdPlaybackStateTest {
         .asList()
         .containsExactly(AD_STATE_AVAILABLE, AD_STATE_AVAILABLE, AD_STATE_AVAILABLE)
         .inOrder();
+  }
+
+  @Test
+  public void withRemovedAdGroupCountBefore() {
+    AdPlaybackState adPlaybackState =
+        new AdPlaybackState("adsId", 6_000_000L, 18_000_000L)
+            .withAdCount(/* adGroupIndex= */ 1, /* adCount= */ 1)
+            .withAdId(1, 0, "ad1-0")
+            .withAvailableAdMediaItem(
+                /* adGroupIndex= */ 1,
+                /* adIndexInAdGroup= */ 0,
+                new MediaItem.Builder()
+                    .setUri("http://example.com/media-1-0.m3u8")
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build());
+
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 6_000_000L))
+        .isEqualTo(adPlaybackState);
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 6_000_001L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 1));
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_000L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 1));
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_001L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 2));
+    assertThat(
+            adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_001L).adGroupCount)
+        .isEqualTo(2);
+  }
+
+  @Test
+  public void withRemovedAdGroupCountBefore_withLivePlaceholder() {
+    AdPlaybackState adPlaybackState =
+        new AdPlaybackState("adsId", 6_000_000L, 18_000_000L)
+            .withLivePostrollPlaceholderAppended(/* isServerSideInserted= */ false)
+            .withAdCount(/* adGroupIndex= */ 1, /* adCount= */ 1)
+            .withAdId(1, 0, "ad1-0")
+            .withAvailableAdMediaItem(
+                /* adGroupIndex= */ 1,
+                /* adIndexInAdGroup= */ 0,
+                new MediaItem.Builder()
+                    .setUri("http://example.com/media-1-0.m3u8")
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build());
+
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 6_000_000L))
+        .isEqualTo(adPlaybackState);
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 6_000_001L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 1));
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_000L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 1));
+    assertThat(adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_001L))
+        .isEqualTo(adPlaybackState.withRemovedAdGroupCount(/* removedAdGroupCount= */ 2));
+    assertThat(
+            adPlaybackState.withRemovedAdGroupCountBefore(/* timeUs= */ 18_000_001L).adGroupCount)
+        .isEqualTo(3);
   }
 
   @Test
@@ -801,6 +857,10 @@ public class AdPlaybackStateTest {
             state.getAdGroupIndexAfterPositionUs(
                 /* positionUs= */ C.TIME_END_OF_SOURCE, /* periodDurationUs= */ 5000))
         .isEqualTo(C.INDEX_UNSET);
+    assertThat(
+            state.getAdGroupIndexAfterPositionUs(
+                /* positionUs= */ 1001, /* periodDurationUs= */ 1002))
+        .isEqualTo(C.INDEX_UNSET);
   }
 
   @Test
@@ -1141,5 +1201,66 @@ public class AdPlaybackStateTest {
             .withAdDurationsUs(adDurationsUs);
 
     assertThat(adPlaybackState.getAdGroup(/* adGroupIndex= */ 3).durationsUs).hasLength(0);
+  }
+
+  @SuppressWarnings("deprecation") // testing deprecated field `uris`
+  @Test
+  public void copy() {
+    AdPlaybackState adPlaybackState =
+        new AdPlaybackState("adsId", 10_000L)
+            .withLivePostrollPlaceholderAppended(false)
+            .withAdCount(/* adGroupIndex= */ 0, 1)
+            .withAvailableAdMediaItem(
+                /* adGroupIndex= */ 0,
+                /* adIndexInAdGroup= */ 0,
+                MediaItem.fromUri("http://example.com/0-0"))
+            .withNewAdGroup(/* adGroupIndex= */ 1, 11_000)
+            .withAdCount(/* adGroupIndex= */ 1, 2)
+            .withAvailableAdMediaItem(
+                /* adGroupIndex= */ 1,
+                /* adIndexInAdGroup= */ 0,
+                MediaItem.fromUri("http://example.com/1-0"))
+            .withAvailableAdMediaItem(
+                /* adGroupIndex= */ 1,
+                /* adIndexInAdGroup= */ 1,
+                MediaItem.fromUri("http://example.com/1-1"))
+            .withNewAdGroup(/* adGroupIndex= */ 2, 12_000);
+
+    AdPlaybackState copy = adPlaybackState.copy();
+
+    assertThat(copy).isEqualTo(adPlaybackState);
+    assertThat(copy).isNotSameInstanceAs(adPlaybackState);
+    for (int adGroupIndex = 0; adGroupIndex < adPlaybackState.adGroupCount; adGroupIndex++) {
+      AdPlaybackState.AdGroup adGroupCopy = copy.getAdGroup(adGroupIndex);
+      AdPlaybackState.AdGroup originalAdGroup = adPlaybackState.getAdGroup(adGroupIndex);
+      assertThat(adGroupCopy).isNotSameInstanceAs(originalAdGroup);
+      assertThat(adGroupCopy.durationsUs).isNotSameInstanceAs(originalAdGroup.durationsUs);
+      assertThat(adGroupCopy.ids).isNotSameInstanceAs(originalAdGroup.ids);
+      assertThat(adGroupCopy.mediaItems).isNotSameInstanceAs(originalAdGroup.mediaItems);
+      assertThat(adGroupCopy.states).isNotSameInstanceAs(originalAdGroup.states);
+      assertThat(adGroupCopy.uris).isNotSameInstanceAs(originalAdGroup.uris);
+    }
+  }
+
+  /**
+   * If this test fails a new field of type array has been added to {@link AdPlaybackState.AdGroup}.
+   * Make sure to update {@link AdPlaybackState.AdGroup#copy} and add a line in the test {@link
+   * #copy()} to verify that the new array field has been copied as a new array instance. Then
+   * increment the expected count in this test case.
+   */
+  @Test
+  public void adGroup_numberOfFieldsOfTypeArray_hasNotChanged() {
+    // 5 fields of type array durationsUs, ids, mediaItems, states, uris.
+    int expectedNumberOfFieldsOfTypeArray = 5;
+    Class<?> clazz = AdPlaybackState.AdGroup.class;
+    Field[] fields = clazz.getFields();
+    int arrayFieldCount = 0;
+    for (Field field : fields) {
+      if (field.getType().isArray()) {
+        arrayFieldCount++;
+      }
+    }
+
+    assertThat(arrayFieldCount).isEqualTo(expectedNumberOfFieldsOfTypeArray);
   }
 }

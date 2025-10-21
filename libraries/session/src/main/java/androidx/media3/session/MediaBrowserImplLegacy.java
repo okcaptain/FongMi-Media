@@ -43,7 +43,6 @@ import com.google.common.util.concurrent.SettableFuture;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Objects;
 import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
 /** Implementation of MediaBrowser with the {@link MediaBrowserCompat} for legacy support. */
@@ -132,7 +131,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
       // Already connected with the given extras.
       result.set(LibraryResult.ofItem(createRootMediaItem(browserCompat), null));
     } else {
-      Bundle rootHints = LegacyConversions.convertToRootHints(params);
+      Bundle rootHints =
+          params == null ? new Bundle() : LegacyConversions.convertToRootHints(params);
       rootHints.putInt(
           androidx.media3.session.legacy.MediaConstants
               .BROWSER_ROOT_HINTS_KEY_CUSTOM_BROWSER_ACTION_LIMIT,
@@ -373,9 +373,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
   @Override
   public ListenableFuture<SessionResult> sendCustomCommand(SessionCommand command, Bundle args) {
     MediaBrowserCompat browserCompat = getBrowserCompat();
-    if (browserCompat != null
-        && (instance.isSessionCommandAvailable(command)
-            || isContainedInCommandButtonsForMediaItems(command))) {
+    if (browserCompat != null) {
       SettableFuture<SessionResult> settable = SettableFuture.create();
       browserCompat.sendCustomAction(
           command.customAction,
@@ -401,19 +399,6 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_ERROR_PERMISSION_DENIED));
   }
 
-  // Using this method as a proxy whether an browser is allowed to send a custom action can be
-  // justified because a MediaBrowserCompat can declare the custom browse actions in onGetRoot()
-  // specifically for each browser that connects. This is different to Media3 where the command
-  // buttons for media items are declared on the session level, and are constraint by the available
-  // session commands granted individually to a controller/browser in onConnect.
-  private boolean isContainedInCommandButtonsForMediaItems(SessionCommand command) {
-    if (command.commandCode != SessionCommand.COMMAND_CODE_CUSTOM) {
-      return false;
-    }
-    CommandButton commandButton = commandButtonsForMediaItems.get(command.customAction);
-    return commandButton != null && Objects.equals(commandButton.sessionCommand, command);
-  }
-
   private MediaBrowserCompat getBrowserCompat(LibraryParams extras) {
     return browserCompats.get(extras);
   }
@@ -430,6 +415,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     return options;
   }
 
+  @Nullable
   private static Bundle getExtras(@Nullable LibraryParams params) {
     return params != null ? params.extras : null;
   }

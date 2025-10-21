@@ -17,6 +17,7 @@ package androidx.media3.transformer;
 
 import static android.app.Activity.RESULT_OK;
 import static android.content.Context.MEDIA_PROJECTION_SERVICE;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 import static com.google.common.truth.Truth.assertThat;
@@ -28,7 +29,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Rect;
-import android.media.MediaCodec;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -41,6 +41,8 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.ConditionVariable;
 import androidx.media3.common.util.Util;
 import androidx.media3.effect.Presentation;
+import androidx.media3.muxer.BufferInfo;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.muxer.MuxerException;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -86,7 +88,7 @@ public final class MediaProjectionAssetLoaderTest {
     // The test does pass on some earlier builds (back to API 23) but not on all devices.
     assumeTrue(
         Util.isRunningOnEmulator()
-            || (Util.SDK_INT >= 29
+            || (SDK_INT >= 29
                 && !Util.isWear(getInstrumentation().getContext())
                 && Build.MODEL.startsWith("Pixel")));
   }
@@ -191,8 +193,7 @@ public final class MediaProjectionAssetLoaderTest {
   private static final class InterceptingMuxerFactory implements Muxer.Factory {
 
     public interface WriteSampleDataCallback {
-      void onWriteSampleData(
-          Format format, ByteBuffer byteBuffer, MediaCodec.BufferInfo bufferInfo);
+      void onWriteSampleData(Format format, ByteBuffer byteBuffer, BufferInfo bufferInfo);
     }
 
     private final WriteSampleDataCallback writeSampleDataCallback;
@@ -216,8 +217,7 @@ public final class MediaProjectionAssetLoaderTest {
         }
 
         @Override
-        public void writeSampleData(
-            int trackId, ByteBuffer byteBuffer, MediaCodec.BufferInfo bufferInfo)
+        public void writeSampleData(int trackId, ByteBuffer byteBuffer, BufferInfo bufferInfo)
             throws MuxerException {
           writeSampleDataCallback.onWriteSampleData(
               formatByTrackId.get(trackId), byteBuffer, bufferInfo);

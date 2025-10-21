@@ -16,6 +16,7 @@
 package androidx.media3.session;
 
 import static androidx.media3.session.MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT;
+import static androidx.media3.session.MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT;
 import static androidx.media3.session.MediaConstants.EXTRAS_KEY_COMPLETION_STATUS;
 import static androidx.media3.session.MediaConstants.EXTRAS_KEY_MEDIA_TYPE_COMPAT;
 import static androidx.media3.session.MediaConstants.EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED;
@@ -307,8 +308,7 @@ public final class LegacyConversionsTest {
 
   @Test
   public void convertToMediaMetadata_withoutTitle() {
-    assertThat(LegacyConversions.convertToMediaMetadata((CharSequence) null))
-        .isEqualTo(MediaMetadata.EMPTY);
+    assertThat(LegacyConversions.convertToMediaMetadata(null)).isEqualTo(MediaMetadata.EMPTY);
   }
 
   @Test
@@ -321,7 +321,7 @@ public final class LegacyConversionsTest {
   public void convertToMediaMetadata_withCustomKey() {
     MediaMetadataCompat.Builder builder = new MediaMetadataCompat.Builder();
     builder.putString(MediaMetadataCompat.METADATA_KEY_TITLE, "title");
-    builder.putLong(EXTRAS_KEY_MEDIA_TYPE_COMPAT, (long) MediaMetadata.MEDIA_TYPE_MUSIC);
+    builder.putLong(EXTRAS_KEY_MEDIA_TYPE_COMPAT, MediaMetadata.MEDIA_TYPE_MUSIC);
     builder.putString("custom_key", "value");
     MediaMetadataCompat testMediaMetadataCompat = builder.build();
 
@@ -373,7 +373,45 @@ public final class LegacyConversionsTest {
         LegacyConversions.convertToMediaMetadata(testMediaMetadataCompat, RatingCompat.RATING_NONE);
 
     assertThat(mediaMetadata.title.toString()).isEqualTo("displayTitle");
-    assertThat(mediaMetadata.displayTitle).isNull();
+    assertThat(mediaMetadata.displayTitle).isEqualTo("displayTitle");
+  }
+
+  @Test
+  public void convertToMediaMetadata_displayTitleSet_usesDisplayTitleDisplayDescriptionAnd() {
+    MediaMetadataCompat testMediaMetadataCompat =
+        new MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, "displayTitle")
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, "displayDescription")
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, "displaySubtitle")
+            .build();
+
+    MediaMetadata mediaMetadata =
+        LegacyConversions.convertToMediaMetadata(testMediaMetadataCompat, RatingCompat.RATING_NONE);
+
+    assertThat(mediaMetadata.title.toString()).isEqualTo("displayTitle");
+    assertThat(mediaMetadata.description.toString()).isEqualTo("displayDescription");
+    assertThat(mediaMetadata.subtitle.toString()).isEqualTo("displaySubtitle");
+    assertThat(mediaMetadata.displayTitle).isEqualTo("displayTitle");
+  }
+
+  @Test
+  public void convertToMediaMetadata_displayTitleNotSet_usesPreferredDescriptionOrder() {
+    MediaMetadataCompat testMediaMetadataCompat =
+        new MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "title")
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, "displayDescription")
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, "displaySubtitle")
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "artist")
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "album")
+            .build();
+
+    MediaMetadata mediaMetadata =
+        LegacyConversions.convertToMediaMetadata(testMediaMetadataCompat, RatingCompat.RATING_NONE);
+
+    assertThat(mediaMetadata.title.toString()).isEqualTo("title");
+    assertThat(mediaMetadata.subtitle.toString()).isEqualTo("artist");
+    assertThat(mediaMetadata.description.toString()).isEqualTo("album");
+    assertThat(mediaMetadata.displayTitle).isEqualTo("title");
   }
 
   @Test
@@ -1138,12 +1176,13 @@ public final class LegacyConversionsTest {
   }
 
   @Test
-  public void convertToMediaButtonPreferences_withIconConstantInExtras() {
+  public void convertToMediaButtonPreferences_withIconConstantAndUriInExtras() {
     String actionStr = "action";
     String displayName = "display_name";
     int iconRes = 21;
     Bundle extras = new Bundle();
     extras.putInt(EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT, CommandButton.ICON_FAST_FORWARD);
+    extras.putString(EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT, "content://my_icon");
     PlaybackStateCompat.CustomAction action =
         new PlaybackStateCompat.CustomAction.Builder(actionStr, displayName, iconRes)
             .setExtras(extras)
@@ -1169,6 +1208,7 @@ public final class LegacyConversionsTest {
     assertThat(button.iconResId).isEqualTo(iconRes);
     assertThat(button.sessionCommand.customAction).isEqualTo(actionStr);
     assertThat(button.icon).isEqualTo(CommandButton.ICON_FAST_FORWARD);
+    assertThat(button.iconUri).isEqualTo(Uri.parse("content://my_icon"));
   }
 
   @Test
@@ -1373,6 +1413,102 @@ public final class LegacyConversionsTest {
         .isEqualTo(
             ApplicationProvider.getApplicationContext()
                 .getString(R.string.error_message_authentication_expired));
+  }
+
+  @Test
+  public void convertToPlaybackException_populatesUnsetMessageFromErrorCode() {
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_ACTION_ABORTED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_AUTHENTICATION_EXPIRED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_CONCURRENT_STREAM_LIMIT),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_CONTENT_ALREADY_PLAYING),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_END_OF_QUEUE),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_NOT_AVAILABLE_IN_REGION),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_NOT_SUPPORTED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_PARENTAL_CONTROL_RESTRICTED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_PREMIUM_ACCOUNT_REQUIRED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_SKIP_LIMIT_REACHED),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+    assertThat(
+            LegacyConversions.convertToPlaybackException(
+                createErrorPlaybackStateCompatWithoutMessage(
+                    PlaybackStateCompat.ERROR_CODE_UNKNOWN_ERROR),
+                ApplicationProvider.getApplicationContext()))
+        .hasMessageThat()
+        .isNotEmpty();
+  }
+
+  private static PlaybackStateCompat createErrorPlaybackStateCompatWithoutMessage(
+      @PlaybackStateCompat.ErrorCode int errorCode) {
+    return new PlaybackStateCompat.Builder()
+        .setState(PlaybackStateCompat.STATE_ERROR, /* position= */ 0, /* playbackSpeed= */ 1.0f)
+        .setErrorMessage(errorCode, /* errorMessage= */ null)
+        .build();
   }
 
   // TODO(b/254265256): Move this method to a central place.

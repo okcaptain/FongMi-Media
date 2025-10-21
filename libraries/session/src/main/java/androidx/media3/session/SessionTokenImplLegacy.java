@@ -150,12 +150,12 @@ import java.util.Objects;
 
   @Override
   public int getLibraryVersion() {
-    return 0;
+    return SessionToken.PLATFORM_SESSION_VERSION;
   }
 
   @Override
   public int getInterfaceVersion() {
-    return 0;
+    return SessionToken.UNKNOWN_INTERFACE_VERSION;
   }
 
   @Override
@@ -172,7 +172,7 @@ import java.util.Objects;
   @Nullable
   @Override
   public MediaSession.Token getPlatformToken() {
-    return legacyToken == null ? null : (MediaSession.Token) legacyToken.getToken();
+    return legacyToken == null ? null : legacyToken.getToken();
   }
 
   private static final String FIELD_LEGACY_TOKEN = Util.intToStringMaxRadix(0);

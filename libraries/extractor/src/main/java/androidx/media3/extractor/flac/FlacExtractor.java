@@ -51,7 +51,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 /**
  * Extracts data from FLAC container format.
  *
- * <p>The format specification can be found at https://xiph.org/flac/format.html.
+ * <p>The format is specified in RFC 9639.
  */
 @UnstableApi
 public final class FlacExtractor implements Extractor {
@@ -329,7 +329,8 @@ public final class FlacExtractor implements Extractor {
 
   private SeekMap getSeekMap(long firstFramePosition, long streamLength) {
     Assertions.checkNotNull(flacStreamMetadata);
-    if (flacStreamMetadata.seekTable != null) {
+    if (flacStreamMetadata.seekTable != null
+        && flacStreamMetadata.seekTable.pointSampleNumbers.length > 0) {
       return new FlacSeekTableSeekMap(flacStreamMetadata, firstFramePosition);
     } else if (streamLength != C.LENGTH_UNSET && flacStreamMetadata.totalSamples > 0) {
       binarySearchSeeker =

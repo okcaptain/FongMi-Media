@@ -14,6 +14,8 @@ track 0:
     maxNumReorderSamples = 2
     width = 416
     height = 234
+    decodedWidth = 416
+    decodedHeight = 240
     maxSubLayers = 1
     colorInfo:
       colorSpace = 2
@@ -22,6 +24,7 @@ track 0:
       lumaBitdepth = 8
       chromaBitdepth = 8
     language = und
+    metadata = entries=[TSSE: description=null: values=[Lavf60.16.100], Mp4Timestamp: creation time=0, modification time=0, timescale=1000]
     initializationData:
       data = length 2426, hash 25737613
   sample 0:

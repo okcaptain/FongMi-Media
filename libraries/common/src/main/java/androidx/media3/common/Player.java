@@ -370,6 +370,22 @@ public interface Player {
           adIndexInAdGroup);
     }
 
+    @Override
+    public String toString() {
+      String positionInfoString =
+          "mediaItem=" + mediaItemIndex + ", period=" + periodIndex + ", pos=" + positionMs;
+      if (adGroupIndex == C.INDEX_UNSET) {
+        return positionInfoString;
+      }
+      return positionInfoString
+          + ", contentPos="
+          + contentPositionMs
+          + ", adGroup="
+          + adGroupIndex
+          + ", ad="
+          + adIndexInAdGroup;
+    }
+
     /**
      * Returns whether this position info and the other position info would result in the same
      * {@link #toBundle() Bundle}.
@@ -1284,11 +1300,17 @@ public interface Player {
   int PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG = 6;
 
   /**
-   * Reason why playback is suppressed even though {@link #getPlayWhenReady()} is {@code true}. One
-   * of {@link #PLAYBACK_SUPPRESSION_REASON_NONE}, {@link
-   * #PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS}, {@link
-   * #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE} or {@link
-   * #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT}.
+   * Reason why playback is suppressed even though {@link #getPlayWhenReady()} is {@code true}.
+   *
+   * <p>One of:
+   *
+   * <ul>
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_NONE}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_SCRUBBING}
+   * </ul>
    */
   // @Target list includes both 'default' targets and TYPE_USE, to ensure backwards compatibility
   // with Kotlin usages from before TYPE_USE was added.
@@ -1300,7 +1322,8 @@ public interface Player {
     PLAYBACK_SUPPRESSION_REASON_NONE,
     PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS,
     PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE,
-    PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT
+    PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT,
+    PLAYBACK_SUPPRESSION_REASON_SCRUBBING
   })
   @interface PlaybackSuppressionReason {}
 
@@ -1320,6 +1343,9 @@ public interface Player {
    * play on built-in speaker on a Wear OS device).
    */
   int PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT = 3;
+
+  /** Playback is suppressed because the player is currently scrubbing. */
+  int PLAYBACK_SUPPRESSION_REASON_SCRUBBING = 4;
 
   /**
    * Repeat modes for playback. One of {@link #REPEAT_MODE_OFF}, {@link #REPEAT_MODE_ONE} or {@link
@@ -2649,13 +2675,6 @@ public interface Player {
   boolean hasPreviousMediaItem();
 
   /**
-   * @deprecated Use {@link #seekToPreviousMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void seekToPreviousWindow();
-
-  /**
    * Seeks to the default position of the previous {@link MediaItem}, which may depend on the
    * current repeat mode and whether shuffle mode is enabled. Does nothing if {@link
    * #hasPreviousMediaItem()} is {@code false}.
@@ -2704,20 +2723,6 @@ public interface Player {
   void seekToPrevious();
 
   /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  boolean hasNext();
-
-  /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  boolean hasNextWindow();
-
-  /**
    * Returns whether a next {@link MediaItem} exists, which may depend on the current repeat mode
    * and whether shuffle mode is enabled.
    *
@@ -2729,20 +2734,6 @@ public interface Player {
    * #getAvailableCommands() available}.
    */
   boolean hasNextMediaItem();
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void next();
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void seekToNextWindow();
 
   /**
    * Seeks to the default position of the next {@link MediaItem}, which may depend on the current

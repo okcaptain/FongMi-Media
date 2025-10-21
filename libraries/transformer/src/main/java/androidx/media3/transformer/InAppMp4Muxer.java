@@ -15,8 +15,6 @@
  */
 package androidx.media3.transformer;
 
-import android.media.MediaCodec;
-import android.media.MediaCodec.BufferInfo;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
@@ -26,7 +24,9 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.container.Mp4OrientationData;
+import androidx.media3.muxer.BufferInfo;
 import androidx.media3.muxer.Mp4Muxer;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.muxer.MuxerException;
 import androidx.media3.muxer.MuxerUtil;
 import com.google.common.collect.ImmutableList;
@@ -122,6 +122,11 @@ public final class InAppMp4Muxer implements Muxer {
       }
       return ImmutableList.of();
     }
+
+    @Override
+    public boolean supportsWritingNegativeTimestampsInEditList() {
+      return true;
+    }
   }
 
   public static final String MUXER_NAME =
@@ -184,12 +189,11 @@ public final class InAppMp4Muxer implements Muxer {
   @Override
   public void close() throws MuxerException {
     if (videoDurationUs != C.TIME_UNSET && videoTrackId != TRACK_ID_UNSET) {
-      BufferInfo bufferInfo = new BufferInfo();
-      bufferInfo.set(
-          /* newOffset= */ 0,
-          /* newSize= */ 0,
-          videoDurationUs,
-          MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+      BufferInfo bufferInfo =
+          new BufferInfo(
+              /* presentationTimeUs= */ videoDurationUs,
+              /* size= */ 0,
+              C.BUFFER_FLAG_END_OF_STREAM);
       writeSampleData(videoTrackId, ByteBuffer.allocateDirect(0), bufferInfo);
     }
     writeMetadata();

@@ -19,6 +19,7 @@ import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STA
 import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STATE_PUBLISHED;
 import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STATE_REMOVED;
 import static androidx.media3.exoplayer.trackselection.TrackSelectionUtil.createFallbackOptions;
+import static com.google.common.collect.Iterables.getLast;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
@@ -73,7 +74,6 @@ import androidx.media3.extractor.metadata.emsg.EventMessage;
 import androidx.media3.extractor.metadata.emsg.EventMessageDecoder;
 import androidx.media3.extractor.metadata.id3.PrivFrame;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.common.primitives.Ints;
 import java.io.EOFException;
 import java.io.IOException;
@@ -516,7 +516,10 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     }
 
     // If we're not forced to reset, try and seek within the buffer.
-    if (sampleQueuesBuilt && !forceReset && seekInsideBufferUs(positionUs, seekToMediaChunk)) {
+    if (sampleQueuesBuilt
+        && !forceReset
+        && !mediaChunks.isEmpty()
+        && seekInsideBufferUs(positionUs, seekToMediaChunk)) {
       return false;
     }
 
@@ -544,11 +547,13 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     if (mediaChunks.isEmpty()) {
       return;
     }
-    HlsMediaChunk lastMediaChunk = Iterables.getLast(mediaChunks);
+    HlsMediaChunk lastMediaChunk = getLast(mediaChunks);
     @HlsChunkSource.ChunkPublicationState
     int chunkState = chunkSource.getChunkPublicationState(lastMediaChunk);
     if (chunkState == CHUNK_PUBLICATION_STATE_PUBLISHED) {
-      lastMediaChunk.publish();
+      if (!lastMediaChunk.isPublished()) {
+        lastMediaChunk.publish(chunkSource.getPublishedPartDurationUs(lastMediaChunk));
+      }
     } else if (chunkState == CHUNK_PUBLICATION_STATE_PRELOAD) {
       handler.post(() -> callback.onPlaylistRefreshRequired(lastMediaChunk.playlistUrl));
     } else if (chunkState == CHUNK_PUBLICATION_STATE_REMOVED
@@ -590,7 +595,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
    * @param playlistUrl The {@link Uri} of the playlist whose load encountered an error.
    * @param loadErrorInfo The load error info.
    * @param forceRetry Whether retry should be forced without considering exclusion.
-   * @return True if excluding did not encounter errors. False otherwise.
+   * @return Whether the playlist will be excluded from future loads.
    */
   public boolean onPlaylistError(Uri playlistUrl, LoadErrorInfo loadErrorInfo, boolean forceRetry) {
     if (!chunkSource.obtainsChunksForPlaylist(playlistUrl)) {
@@ -610,8 +615,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     }
     // We must call ChunkSource.onPlaylistError in any case to give the chunk source the chance to
     // mark the playlist as failing.
-    return chunkSource.onPlaylistError(playlistUrl, exclusionDurationMs)
-        && exclusionDurationMs != C.TIME_UNSET;
+    return chunkSource.onPlaylistError(playlistUrl, exclusionDurationMs);
   }
 
   /** Returns whether the primary sample stream is {@link C#TRACK_TYPE_VIDEO}. */
@@ -712,7 +716,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     int skipCount = sampleQueue.getSkipCount(positionUs, loadingFinished);
 
     // Ensure we don't skip into preload chunks until we can be sure they are permanently published.
-    @Nullable HlsMediaChunk lastChunk = Iterables.getLast(mediaChunks, /* defaultValue= */ null);
+    @Nullable HlsMediaChunk lastChunk = getLast(mediaChunks, /* defaultValue= */ null);
     if (lastChunk != null && !lastChunk.isPublished()) {
       int readIndex = sampleQueue.getReadIndex();
       int firstSampleIndex = lastChunk.getFirstSampleIndex(sampleQueueIndex);
@@ -767,24 +771,38 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
     List<HlsMediaChunk> chunkQueue;
     long loadPositionUs;
+    long largestReadPositionUs;
     if (isPendingReset()) {
       chunkQueue = Collections.emptyList();
       loadPositionUs = pendingResetPositionUs;
+      largestReadPositionUs = pendingResetPositionUs;
       for (SampleQueue sampleQueue : sampleQueues) {
         sampleQueue.setStartTimeUs(pendingResetPositionUs);
       }
     } else {
       chunkQueue = readOnlyMediaChunks;
       HlsMediaChunk lastMediaChunk = getLastMediaChunk();
-      loadPositionUs =
-          lastMediaChunk.isLoadCompleted()
-              ? lastMediaChunk.endTimeUs
-              : max(lastSeekPositionUs, lastMediaChunk.startTimeUs);
+      if (!lastMediaChunk.isLoadCompleted() || !lastMediaChunk.isPublished()) {
+        // When reloading a failed or canceled chunk, or continuing to load at an unpublished
+        // preload chunk, request the new chunk at its start position.
+        loadPositionUs = max(lastSeekPositionUs, lastMediaChunk.startTimeUs);
+      } else {
+        // Load the next chunk after one with a published duration.
+        loadPositionUs = lastMediaChunk.getPublishedEndTimeUs();
+      }
+      largestReadPositionUs = lastSeekPositionUs;
+      if (sampleQueuesBuilt) {
+        for (SampleQueue sampleQueue : sampleQueues) {
+          largestReadPositionUs =
+              max(largestReadPositionUs, sampleQueue.getLargestReadTimestampUs());
+        }
+      }
     }
     nextChunkHolder.clear();
     chunkSource.getNextChunk(
         loadingInfo,
         loadPositionUs,
+        largestReadPositionUs,
         chunkQueue,
         /* allowEndOfStream= */ prepared || !chunkQueue.isEmpty(),
         nextChunkHolder);
@@ -806,12 +824,41 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     }
 
     if (isMediaChunk(loadable)) {
+      maybeDiscardUpstreamForNewMediaChunk((HlsMediaChunk) loadable);
       initMediaChunkLoad((HlsMediaChunk) loadable);
     }
     loadingChunk = loadable;
     loader.startLoading(
         loadable, this, loadErrorHandlingPolicy.getMinimumLoadableRetryCount(loadable.type));
     return true;
+  }
+
+  private void maybeDiscardUpstreamForNewMediaChunk(HlsMediaChunk newChunk) {
+    if (mediaChunks.isEmpty()) {
+      return;
+    }
+    if (!getLastMediaChunk().isPublished()) {
+      // Switching chunks to a new playlist and the last chunk of the previous playlist has an
+      // unknown publication status, so we have to discard it.
+      discardUpstream(/* preferredQueueSize= */ mediaChunks.size() - 1);
+    }
+    if (newChunk.isIndependent && newChunk.shouldSpliceIn()) {
+      // Attempting to splice in an independent chunk. See if that can be avoided by cleanly
+      // discarding existing chunks starting from the same position.
+      for (int i = mediaChunks.size() - 1; i >= 0; i--) {
+        long existingChunkStartTimeUs = mediaChunks.get(i).startTimeUs;
+        if (existingChunkStartTimeUs < newChunk.startTimeUs) {
+          // Before new start time, this is the existing chunk we need to splice into.
+          break;
+        } else if (existingChunkStartTimeUs == newChunk.startTimeUs
+            && canDiscardUpstreamMediaChunksFromIndex(i)) {
+          // Exact match, assume we can just replace the chunk entirely.
+          discardUpstream(/* preferredQueueSize= */ i);
+          newChunk.clearShouldSpliceIn();
+          break;
+        }
+      }
+    }
   }
 
   @Override
@@ -999,7 +1046,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
         if (mediaChunks.isEmpty()) {
           pendingResetPositionUs = lastSeekPositionUs;
         } else {
-          Iterables.getLast(mediaChunks).invalidateExtractor();
+          getLast(mediaChunks).invalidateExtractor();
         }
       }
       loadErrorAction = Loader.DONT_RETRY;
@@ -1058,7 +1105,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     chunk.init(/* output= */ this, sampleQueueWriteIndicesBuilder.build());
     for (HlsSampleQueue sampleQueue : sampleQueues) {
       sampleQueue.setSourceChunk(chunk);
-      if (chunk.shouldSpliceIn) {
+      if (chunk.shouldSpliceIn()) {
         sampleQueue.splice();
       }
     }
@@ -1083,7 +1130,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     if (mediaChunks.isEmpty()) {
       pendingResetPositionUs = lastSeekPositionUs;
     } else {
-      Iterables.getLast(mediaChunks).invalidateExtractor();
+      getLast(mediaChunks).invalidateExtractor();
     }
     loadingFinished = false;
 
@@ -1287,7 +1334,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
   private boolean canDiscardUpstreamMediaChunksFromIndex(int mediaChunkIndex) {
     for (int i = mediaChunkIndex; i < mediaChunks.size(); i++) {
-      if (mediaChunks.get(i).shouldSpliceIn) {
+      if (mediaChunks.get(i).shouldSpliceIn()) {
         // Discarding not possible because a spliced-in chunk potentially removed sample metadata
         // from the previous chunks.
         // TODO: Keep sample metadata to allow restoring these chunks [internal b/159904763].
@@ -1520,7 +1567,10 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       if (chunk != null) {
         seekInsideQueue = sampleQueue.seekTo(chunk.getFirstSampleIndex(i));
       } else {
-        seekInsideQueue = sampleQueue.seekTo(positionUs, /* allowTimeBeyondBuffer= */ false);
+        long nextLoadPositionUs = getNextLoadPositionUs();
+        boolean allowTimeBeyondBuffer =
+            nextLoadPositionUs == C.TIME_END_OF_SOURCE || positionUs < nextLoadPositionUs;
+        seekInsideQueue = sampleQueue.seekTo(positionUs, allowTimeBeyondBuffer);
       }
       // If we have AV tracks then an in-queue seek is successful if the seek into every AV queue
       // is successful. We ignore whether seeks within non-AV queues are successful in this case, as

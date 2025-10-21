@@ -631,6 +631,9 @@ public class MockPlayer implements Player {
       return;
     }
     boolean wasPlaying = isPlaying();
+    if (playbackState != STATE_IDLE) {
+      this.playerError = null;
+    }
     this.playbackState = playbackState;
     boolean isPlaying = isPlaying();
     for (Listener listener : listeners) {
@@ -1081,24 +1084,6 @@ public class MockPlayer implements Player {
     checkNotNull(conditionVariables.get(METHOD_REPLACE_MEDIA_ITEMS)).open();
   }
 
-  /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public boolean hasNext() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public boolean hasNextWindow() {
-    throw new UnsupportedOperationException();
-  }
-
   @Override
   public boolean hasPreviousMediaItem() {
     throw new UnsupportedOperationException();
@@ -1106,33 +1091,6 @@ public class MockPlayer implements Player {
 
   @Override
   public boolean hasNextMediaItem() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public void next() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #seekToPreviousMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public void seekToPreviousWindow() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public void seekToNextWindow() {
     throw new UnsupportedOperationException();
   }
 

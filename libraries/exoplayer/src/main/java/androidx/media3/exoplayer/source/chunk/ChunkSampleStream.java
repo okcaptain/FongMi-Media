@@ -299,9 +299,10 @@ public class ChunkSampleStream<T extends ChunkSource>
       // chunk even if its timestamp is slightly earlier than the advertised chunk start time.
       seekInsideBuffer = primarySampleQueue.seekTo(seekToMediaChunk.getFirstSampleIndex(0));
     } else {
-      seekInsideBuffer =
-          primarySampleQueue.seekTo(
-              positionUs, /* allowTimeBeyondBuffer= */ positionUs < getNextLoadPositionUs());
+      long nextLoadPositionUs = getNextLoadPositionUs();
+      boolean allowTimeBeyondBuffer =
+          nextLoadPositionUs == C.TIME_END_OF_SOURCE || positionUs < nextLoadPositionUs;
+      seekInsideBuffer = primarySampleQueue.seekTo(positionUs, allowTimeBeyondBuffer);
     }
 
     if (seekInsideBuffer) {
@@ -747,9 +748,13 @@ public class ChunkSampleStream<T extends ChunkSource>
       // No data beyond new duration that needs to be clipped.
       return;
     }
-    primarySampleQueue.discardUpstreamFrom(clippedDurationUs);
+    long minDiscardPositionUs =
+        max(clippedDurationUs, primarySampleQueue.getLargestReadTimestampUs() + 1);
+    primarySampleQueue.discardUpstreamFrom(minDiscardPositionUs);
     for (SampleQueue embeddedSampleQueue : embeddedSampleQueues) {
-      embeddedSampleQueue.discardUpstreamFrom(clippedDurationUs);
+      minDiscardPositionUs =
+          max(clippedDurationUs, embeddedSampleQueue.getLargestReadTimestampUs() + 1);
+      embeddedSampleQueue.discardUpstreamFrom(minDiscardPositionUs);
     }
     mediaSourceEventDispatcher.upstreamDiscarded(
         primaryTrackType, clippedDurationUs, largestQueuedTimestampUs);

@@ -16,6 +16,9 @@
 
 package androidx.media3.transformer;
 
+import static android.media.MediaCodecInfo.CodecProfileLevel.AVCLevel4;
+import static android.media.MediaCodecInfo.CodecProfileLevel.AVCProfileHigh;
+import static androidx.media3.exoplayer.mediacodec.MediaCodecUtil.createCodecProfileLevel;
 import static androidx.media3.transformer.ExportException.ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED;
 import static androidx.test.core.app.ApplicationProvider.getApplicationContext;
 import static com.google.common.truth.Truth.assertThat;
@@ -23,6 +26,7 @@ import static org.junit.Assert.assertThrows;
 
 import android.content.Context;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecInfo.CodecProfileLevel;
 import android.media.MediaFormat;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
@@ -34,6 +38,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.MediaCodecInfoBuilder;
+import org.robolectric.shadows.ShadowBuild;
 import org.robolectric.shadows.ShadowMediaCodec;
 import org.robolectric.shadows.ShadowMediaCodecList;
 
@@ -58,11 +63,9 @@ public class DefaultEncoderFactoryTest {
   private static void createShadowH264Encoder() {
     MediaFormat avcFormat = new MediaFormat();
     avcFormat.setString(MediaFormat.KEY_MIME, MediaFormat.MIMETYPE_VIDEO_AVC);
-    MediaCodecInfo.CodecProfileLevel profileLevel = new MediaCodecInfo.CodecProfileLevel();
-    profileLevel.profile = MediaCodecInfo.CodecProfileLevel.AVCProfileHigh;
     // Using Level4 gives us 8192 16x16 blocks. If using width 1920 uses 120 blocks, 8192 / 120 = 68
     // blocks will be left for encoding height 1088.
-    profileLevel.level = MediaCodecInfo.CodecProfileLevel.AVCLevel4;
+    CodecProfileLevel profileLevel = createCodecProfileLevel(AVCProfileHigh, AVCLevel4);
 
     createShadowVideoEncoder(avcFormat, profileLevel, "test.transformer.avc.encoder");
   }
@@ -79,16 +82,14 @@ public class DefaultEncoderFactoryTest {
   }
 
   private static void createShadowVideoEncoder(
-      MediaFormat supportedFormat,
-      MediaCodecInfo.CodecProfileLevel supportedProfileLevel,
-      String name) {
+      MediaFormat supportedFormat, CodecProfileLevel supportedProfileLevel, String name) {
     MediaCodecInfo.CodecCapabilities capabilities =
         MediaCodecInfoBuilder.CodecCapabilitiesBuilder.newBuilder()
             .setMediaFormat(supportedFormat)
             .setIsEncoder(true)
             .setColorFormats(
                 new int[] {MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible})
-            .setProfileLevels(new MediaCodecInfo.CodecProfileLevel[] {supportedProfileLevel})
+            .setProfileLevels(new CodecProfileLevel[] {supportedProfileLevel})
             .build();
     createShadowEncoder(name, capabilities);
   }
@@ -111,7 +112,7 @@ public class DefaultEncoderFactoryTest {
     Format actualVideoFormat =
         new DefaultEncoderFactory.Builder(context)
             .build()
-            .createForVideoEncoding(requestedVideoFormat)
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null)
             .getConfigurationFormat();
 
     assertThat(actualVideoFormat.sampleMimeType).isEqualTo(MimeTypes.VIDEO_H264);
@@ -129,7 +130,9 @@ public class DefaultEncoderFactoryTest {
     ExportException exportException =
         assertThrows(
             ExportException.class,
-            () -> encoderFactory.createForVideoEncoding(requestedVideoFormat));
+            () ->
+                encoderFactory.createForVideoEncoding(
+                    requestedVideoFormat, /* logSessionId= */ null));
     assertThat(exportException.errorCode).isEqualTo(ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED);
   }
 
@@ -140,7 +143,7 @@ public class DefaultEncoderFactoryTest {
     Format actualVideoFormat =
         new DefaultEncoderFactory.Builder(context)
             .build()
-            .createForVideoEncoding(requestedVideoFormat)
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null)
             .getConfigurationFormat();
 
     assertThat(actualVideoFormat.width).isEqualTo(1920);
@@ -158,7 +161,7 @@ public class DefaultEncoderFactoryTest {
         new DefaultEncoderFactory.Builder(context)
             .setRequestedVideoEncoderSettings(VideoEncoderSettings.DEFAULT)
             .build()
-            .createForVideoEncoding(requestedVideoFormat)
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null)
             .getConfigurationFormat();
 
     assertThat(actualVideoFormat.sampleMimeType).isEqualTo(MimeTypes.VIDEO_H264);
@@ -175,7 +178,7 @@ public class DefaultEncoderFactoryTest {
     Format actualVideoFormat =
         new DefaultEncoderFactory.Builder(context)
             .build()
-            .createForVideoEncoding(requestedVideoFormat)
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null)
             .getConfigurationFormat();
 
     assertThat(actualVideoFormat.sampleMimeType).isEqualTo(MimeTypes.VIDEO_H264);
@@ -184,30 +187,6 @@ public class DefaultEncoderFactoryTest {
     // The default behavior is to use DefaultEncoderFactory#getSuggestedBitrate.
     // 1920 * 1080 * 30 * 0.07 * 2.
     assertThat(actualVideoFormat.averageBitrate).isEqualTo(8_709_120);
-  }
-
-  @Test
-  public void
-      createForVideoEncoding_setFormatAverageBitrateAndSetVideoEncoderSettingHighQualityTargeting_configuresEncoderUsingHighQualityTargeting()
-          throws Exception {
-    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
-    requestedVideoFormat = requestedVideoFormat.buildUpon().setAverageBitrate(5_000_000).build();
-    Format actualVideoFormat =
-        new DefaultEncoderFactory.Builder(context)
-            .setRequestedVideoEncoderSettings(
-                new VideoEncoderSettings.Builder()
-                    .experimentalSetEnableHighQualityTargeting(true)
-                    .build())
-            .build()
-            .createForVideoEncoding(requestedVideoFormat)
-            .getConfigurationFormat();
-
-    assertThat(actualVideoFormat.sampleMimeType).isEqualTo(MimeTypes.VIDEO_H264);
-    assertThat(actualVideoFormat.width).isEqualTo(1920);
-    assertThat(actualVideoFormat.height).isEqualTo(1080);
-    // DeviceMappedEncoderBitrateProvider will produce 1920 * 1080 * 30 * 1.4, but the value is
-    // clampped down to the encoder's maximum, 25_000_000.
-    assertThat(actualVideoFormat.averageBitrate).isEqualTo(25_000_000);
   }
 
   @Test
@@ -222,7 +201,7 @@ public class DefaultEncoderFactoryTest {
             .setRequestedVideoEncoderSettings(
                 new VideoEncoderSettings.Builder().setBitrate(10_000_000).build())
             .build()
-            .createForVideoEncoding(requestedVideoFormat)
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null)
             .getConfigurationFormat();
 
     assertThat(actualVideoFormat.sampleMimeType).isEqualTo(MimeTypes.VIDEO_H264);
@@ -240,7 +219,7 @@ public class DefaultEncoderFactoryTest {
     Codec videoEncoder =
         new DefaultEncoderFactory.Builder(context)
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(videoEncoder).isInstanceOf(DefaultCodec.class);
     MediaFormat configurationMediaFormat =
@@ -265,7 +244,7 @@ public class DefaultEncoderFactoryTest {
                     .setEncoderPerformanceParameters(/* operatingRate= */ -1, /* priority= */ 1)
                     .build())
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(videoEncoder).isInstanceOf(DefaultCodec.class);
     MediaFormat configurationMediaFormat =
@@ -290,7 +269,7 @@ public class DefaultEncoderFactoryTest {
                         /* operatingRate= */ VideoEncoderSettings.RATE_UNSET, /* priority= */ 1)
                     .build())
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(videoEncoder).isInstanceOf(DefaultCodec.class);
     MediaFormat configurationMediaFormat =
@@ -314,7 +293,7 @@ public class DefaultEncoderFactoryTest {
                         VideoEncoderSettings.RATE_UNSET, VideoEncoderSettings.RATE_UNSET)
                     .build())
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(videoEncoder).isInstanceOf(DefaultCodec.class);
     MediaFormat configurationMediaFormat =
@@ -333,7 +312,7 @@ public class DefaultEncoderFactoryTest {
             .setRequestedVideoEncoderSettings(
                 new VideoEncoderSettings.Builder().setRepeatPreviousFrameIntervalUs(33_333).build())
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(
             videoEncoder
@@ -350,12 +329,170 @@ public class DefaultEncoderFactoryTest {
     DefaultCodec videoEncoder =
         new DefaultEncoderFactory.Builder(context)
             .build()
-            .createForVideoEncoding(requestedVideoFormat);
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
 
     assertThat(
             videoEncoder
                 .getConfigurationMediaFormat()
                 .containsKey(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER))
+        .isFalse();
+  }
+
+  @Test
+  @Config(sdk = 29)
+  public void createForVideoEncoding_withMaxBFrames_configuresEncoderWithMaxBFrames()
+      throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder().setMaxBFrames(3).build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(videoEncoder.getConfigurationMediaFormat().getInteger(MediaFormat.KEY_MAX_B_FRAMES))
+        .isEqualTo(3);
+  }
+
+  @Test
+  @Config(sdk = 23)
+  public void createForVideoEncoding_withMaxBFramesOnApi23_doesNotConfigureMaxBFrames()
+      throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder().setMaxBFrames(3).build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(videoEncoder.getConfigurationMediaFormat().containsKey(MediaFormat.KEY_MAX_B_FRAMES))
+        .isFalse();
+  }
+
+  @Test
+  @Config(sdk = 29)
+  public void createForVideoEncoding_withDefaultEncoderSettings_doesNotConfigureMaxBFrames()
+      throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(videoEncoder.getConfigurationMediaFormat().containsKey(MediaFormat.KEY_MAX_B_FRAMES))
+        .isFalse();
+  }
+
+  @Config(sdk = 29)
+  @Test
+  public void
+      createForVideoEncoding_withTemporalLayeringSchemaWithZeroLayers_configuresEncoderWithTemporalLayeringSchema()
+          throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder()
+                    .setTemporalLayers(
+                        /* numNonBidirectionalLayers= */ 0, /* numBidirectionalLayers= */ 0)
+                    .build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(
+            videoEncoder.getConfigurationMediaFormat().getString(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isEqualTo("none");
+  }
+
+  @Config(sdk = 29)
+  @Test
+  public void
+      createForVideoEncoding_withTemporalLayeringSchemaWithoutBidirectionalLayers_configuresEncoderWithTemporalLayeringSchema()
+          throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder()
+                    .setTemporalLayers(
+                        /* numNonBidirectionalLayers= */ 1, /* numBidirectionalLayers= */ 0)
+                    .build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(
+            videoEncoder.getConfigurationMediaFormat().getString(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isEqualTo("android.generic.1");
+  }
+
+  @Config(sdk = 29)
+  @Test
+  public void
+      createForVideoEncoding_withTemporalLayeringSchemaWithBidirectionalLayers_configuresEncoderWithTemporalLayeringSchema()
+          throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder()
+                    .setTemporalLayers(
+                        /* numNonBidirectionalLayers= */ 1, /* numBidirectionalLayers= */ 2)
+                    .build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(
+            videoEncoder.getConfigurationMediaFormat().getString(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isEqualTo("android.generic.1+2");
+  }
+
+  @Config(sdk = 23)
+  @Test
+  public void
+      createForVideoEncoding_withTemporalLayeringSchemaOnApi23_doesNotConfigureTemporalLayeringSchema()
+          throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder()
+                    .setTemporalLayers(
+                        /* numNonBidirectionalLayers= */ 1, /* numBidirectionalLayers= */ 2)
+                    .build())
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(
+            videoEncoder
+                .getConfigurationMediaFormat()
+                .containsKey(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isFalse();
+  }
+
+  @Config(sdk = 29)
+  @Test
+  public void
+      createForVideoEncoding_withDefaultEncoderSettings_doesNotConfigureTemporalLayeringSchema()
+          throws Exception {
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(
+            videoEncoder
+                .getConfigurationMediaFormat()
+                .containsKey(MediaFormat.KEY_TEMPORAL_LAYERING))
         .isFalse();
   }
 
@@ -368,7 +505,81 @@ public class DefaultEncoderFactoryTest {
             new DefaultEncoderFactory.Builder(context)
                 .setVideoEncoderSelector((mimeType) -> ImmutableList.of())
                 .build()
-                .createForVideoEncoding(requestedVideoFormat));
+                .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null));
+  }
+
+  @Test
+  @Config(sdk = 31)
+  public void createForVideoEncoding_withCodecDbLiteEnabled_configuresEncoderWithCodecDbLite()
+      throws Exception {
+    ShadowBuild.setSystemOnChipManufacturer("QTI");
+    ShadowBuild.setSystemOnChipModel("SM8550");
+
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setEnableCodecDbLite(true)
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+    assertThat(videoEncoder.getConfigurationMediaFormat().getInteger(MediaFormat.KEY_MAX_B_FRAMES))
+        .isEqualTo(1);
+    assertThat(
+            videoEncoder.getConfigurationMediaFormat().getString(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isEqualTo("android.generic.1+2");
+  }
+
+  // TODO: b/419347899 - Update CodecDB Lite tests once hardware identification on pre-API 31
+  // devices is supported for greater coverage across media3-supported devices.
+  @Test
+  @Config(sdk = 31)
+  public void createForVideoEncoding_withCodecDbLiteEnabled_doesNotOverwriteUserRequestedSettings()
+      throws Exception {
+    ShadowBuild.setSystemOnChipManufacturer("QTI");
+    ShadowBuild.setSystemOnChipModel("SM8550");
+
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setRequestedVideoEncoderSettings(
+                new VideoEncoderSettings.Builder()
+                    .setMaxBFrames(0)
+                    .setTemporalLayers(
+                        /* numNonBidirectionalLayers= */ 0, /* numBidirectionalLayers= */ 0)
+                    .build())
+            .setEnableCodecDbLite(true)
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+    assertThat(videoEncoder.getConfigurationMediaFormat().getInteger(MediaFormat.KEY_MAX_B_FRAMES))
+        .isEqualTo(0);
+    assertThat(
+            videoEncoder.getConfigurationMediaFormat().getString(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isEqualTo("none");
+  }
+
+  @Test
+  @Config(sdk = 31)
+  public void createForVideoEncoding_withCodecDbLiteDisabled_doesNotUseCodecDbLite()
+      throws Exception {
+    ShadowBuild.setSystemOnChipManufacturer("QTI");
+    ShadowBuild.setSystemOnChipModel("SM8550");
+
+    Format requestedVideoFormat = createVideoFormat(MimeTypes.VIDEO_H264, 1920, 1080, 30);
+
+    DefaultCodec videoEncoder =
+        new DefaultEncoderFactory.Builder(context)
+            .setEnableCodecDbLite(false)
+            .build()
+            .createForVideoEncoding(requestedVideoFormat, /* logSessionId= */ null);
+
+    assertThat(videoEncoder.getConfigurationMediaFormat().containsKey(MediaFormat.KEY_MAX_B_FRAMES))
+        .isFalse();
+    assertThat(
+            videoEncoder
+                .getConfigurationMediaFormat()
+                .containsKey(MediaFormat.KEY_TEMPORAL_LAYERING))
+        .isFalse();
   }
 
   @Test
@@ -381,7 +592,7 @@ public class DefaultEncoderFactoryTest {
         new DefaultEncoderFactory.Builder(context)
             .setEnableFallback(true)
             .build()
-            .createForAudioEncoding(requestedAudioFormat);
+            .createForAudioEncoding(requestedAudioFormat, /* logSessionId= */ null);
 
     Format inputFormat = codec.getInputFormat();
     Format configurationFormat = codec.getConfigurationFormat();

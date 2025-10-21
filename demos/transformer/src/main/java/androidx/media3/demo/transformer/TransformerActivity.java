@@ -16,6 +16,7 @@
 package androidx.media3.demo.transformer;
 
 import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS;
@@ -405,6 +406,14 @@ public final class TransformerActivity extends AppCompatActivity {
         transformerBuilder.setDebugViewProvider(new DemoDebugViewProvider());
       }
 
+      if (bundle.getBoolean(ConfigurationActivity.ENABLE_TRIM_OPTIMIZATION)) {
+        transformerBuilder.experimentalSetTrimOptimizationEnabled(true);
+      }
+
+      if (bundle.getBoolean(ConfigurationActivity.ENABLE_MP4_EDIT_LIST_TRIMMING)) {
+        transformerBuilder.experimentalSetMp4EditListTrimEnabled(true);
+      }
+
       if (bundle.getBoolean(ConfigurationActivity.ENABLE_ANALYZER_MODE)) {
         return ExperimentalAnalyzerModeFactory.buildAnalyzer(
             this.getApplicationContext(), transformerBuilder.build());
@@ -434,6 +443,7 @@ public final class TransformerActivity extends AppCompatActivity {
     transformerBuilder.setEncoderFactory(
         new DefaultEncoderFactory.Builder(this.getApplicationContext())
             .setEnableFallback(bundle.getBoolean(ConfigurationActivity.ENABLE_FALLBACK))
+            .setEnableCodecDbLite(bundle.getBoolean(ConfigurationActivity.ENABLE_CODECDB_LITE))
             .setRequestedVideoEncoderSettings(videoEncoderSettings)
             .build());
 
@@ -466,14 +476,16 @@ public final class TransformerActivity extends AppCompatActivity {
               bundle.getBoolean(ConfigurationActivity.SHOULD_FLATTEN_FOR_SLOW_MOTION))
           .setEffects(new Effects(audioProcessors, videoEffects));
     }
-    Composition.Builder compositionBuilder =
-        new Composition.Builder(
-            new EditedMediaItemSequence.Builder(editedMediaItemBuilder.build()).build());
+    EditedMediaItemSequence.Builder editedMediaItemSequenceBuilder =
+        new EditedMediaItemSequence.Builder(editedMediaItemBuilder.build());
     if (bundle != null) {
-      compositionBuilder
-          .setHdrMode(bundle.getInt(ConfigurationActivity.HDR_MODE))
-          .experimentalSetForceAudioTrack(
-              bundle.getBoolean(ConfigurationActivity.FORCE_AUDIO_TRACK));
+      editedMediaItemSequenceBuilder.experimentalSetForceAudioTrack(
+          bundle.getBoolean(ConfigurationActivity.FORCE_AUDIO_TRACK));
+    }
+    Composition.Builder compositionBuilder =
+        new Composition.Builder(editedMediaItemSequenceBuilder.build());
+    if (bundle != null) {
+      compositionBuilder.setHdrMode(bundle.getInt(ConfigurationActivity.HDR_MODE));
     }
     return compositionBuilder.build();
   }
@@ -677,8 +689,8 @@ public final class TransformerActivity extends AppCompatActivity {
     int resolutionHeight =
         bundle.getInt(ConfigurationActivity.RESOLUTION_HEIGHT, /* defaultValue= */ C.LENGTH_UNSET);
     if (resolutionHeight != C.LENGTH_UNSET) {
-      effects.add(LanczosResample.scaleToFit(10000, resolutionHeight));
-      effects.add(Presentation.createForHeight(resolutionHeight));
+      effects.add(LanczosResample.scaleToFitWithFlexibleOrientation(10000, resolutionHeight));
+      effects.add(Presentation.createForShortSide(resolutionHeight));
     }
 
     return effects.build();
@@ -983,14 +995,14 @@ public final class TransformerActivity extends AppCompatActivity {
                 .setOngoing(true)
                 .setSmallIcon(R.drawable.exo_icon_play)
                 .build();
-        if (Util.SDK_INT >= 26) {
+        if (SDK_INT >= 26) {
           NotificationChannel channel =
               new NotificationChannel(
                   CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH);
           NotificationManager manager = getSystemService(NotificationManager.class);
           manager.createNotificationChannel(channel);
         }
-        if (Util.SDK_INT >= 29) {
+        if (SDK_INT >= 29) {
           startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
         } else {
           startForeground(NOTIFICATION_ID, notification);

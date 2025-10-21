@@ -50,6 +50,7 @@ import static java.lang.Math.max;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import android.annotation.SuppressLint;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
@@ -95,6 +96,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
@@ -103,10 +105,6 @@ import java.util.concurrent.TimeoutException;
 /* package*/ class LegacyConversions {
 
   private static final String TAG = "LegacyConversions";
-
-  // Stub BrowserRoot for accepting any connection here.
-  public static final BrowserRoot defaultBrowserRoot =
-      new BrowserRoot(MediaLibraryService.SERVICE_INTERFACE, null);
 
   public static final ImmutableSet<String> KNOWN_METADATA_COMPAT_KEYS =
       ImmutableSet.of(
@@ -153,12 +151,17 @@ import java.util.concurrent.TimeoutException;
   /** Converts {@link PlaybackStateCompat} to {@link PlaybackException}. */
   @Nullable
   public static PlaybackException convertToPlaybackException(
-      @Nullable PlaybackStateCompat playbackStateCompat) {
+      @Nullable PlaybackStateCompat playbackStateCompat, Context context) {
     if (playbackStateCompat == null
         || playbackStateCompat.getState() != PlaybackStateCompat.STATE_ERROR) {
       return null;
     }
     @Nullable CharSequence errorMessage = playbackStateCompat.getErrorMessage();
+    if (errorMessage == null) {
+      errorMessage =
+          getSessionErrorMessage(
+              convertToSessionErrorCode(playbackStateCompat.getErrorCode()), context);
+    }
     @Nullable Bundle playbackStateCompatExtras = playbackStateCompat.getExtras();
     return new PlaybackException(
         errorMessage != null ? errorMessage.toString() : null,
@@ -573,15 +576,37 @@ import java.util.concurrent.TimeoutException;
 
     MediaMetadata.Builder builder = new MediaMetadata.Builder();
 
-    CharSequence title = metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_TITLE);
+    @Nullable
     CharSequence displayTitle =
         metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE);
+    CharSequence displaySubtitle;
+    CharSequence displayDescription;
+    if (displayTitle != null) {
+      displaySubtitle = metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE);
+      displayDescription =
+          metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION);
+    } else {
+      CharSequence[] texts = new CharSequence[3];
+      int textIndex = 0;
+      int keyIndex = 0;
+      while (textIndex < texts.length && keyIndex < PREFERRED_DESCRIPTION_ORDER.length) {
+        CharSequence next = metadataCompat.getText(PREFERRED_DESCRIPTION_ORDER[keyIndex++]);
+        if (!TextUtils.isEmpty(next)) {
+          // Fill in the next empty bit of text
+          texts[textIndex++] = next;
+        }
+      }
+      displayTitle = texts[0];
+      displaySubtitle = texts[1];
+      displayDescription = texts[2];
+    }
+
+    CharSequence title = metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_TITLE);
     builder
         .setTitle(title != null ? title : displayTitle)
-        .setDisplayTitle(title != null ? displayTitle : null)
-        .setSubtitle(metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE))
-        .setDescription(
-            metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION))
+        .setDisplayTitle(displayTitle)
+        .setSubtitle(displaySubtitle)
+        .setDescription(displayDescription)
         .setArtist(metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_ARTIST))
         .setAlbumTitle(metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_ALBUM))
         .setAlbumArtist(metadataCompat.getText(MediaMetadataCompat.METADATA_KEY_ALBUM_ARTIST))
@@ -767,9 +792,9 @@ import java.util.concurrent.TimeoutException;
       // If the actual media duration is unknown, use the manually declared value if available.
       durationMs = metadata.durationMs;
     }
-    if (durationMs != C.TIME_UNSET) {
-      builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs);
-    }
+    // METADATA_KEY_DURATION expects any negative value if unknown.
+    builder.putLong(
+        MediaMetadataCompat.METADATA_KEY_DURATION, durationMs != C.TIME_UNSET ? durationMs : -1);
 
     @Nullable RatingCompat userRatingCompat = convertToRatingCompat(metadata.userRating);
     if (userRatingCompat != null) {
@@ -1478,13 +1503,11 @@ import java.util.concurrent.TimeoutException;
 
     if (state != null) {
       List<PlaybackStateCompat.CustomAction> customActions = state.getCustomActions();
-      if (customActions != null) {
-        for (CustomAction customAction : customActions) {
-          String action = customAction.getAction();
-          @Nullable Bundle extras = customAction.getExtras();
-          sessionCommandsBuilder.add(
-              new SessionCommand(action, extras == null ? Bundle.EMPTY : extras));
-        }
+      for (CustomAction customAction : customActions) {
+        String action = customAction.getAction();
+        @Nullable Bundle extras = customAction.getExtras();
+        sessionCommandsBuilder.add(
+            new SessionCommand(action, extras == null ? Bundle.EMPTY : extras));
       }
     }
     return sessionCommandsBuilder.build();
@@ -1506,9 +1529,6 @@ import java.util.concurrent.TimeoutException;
       return ImmutableList.of();
     }
     List<PlaybackStateCompat.CustomAction> customActions = state.getCustomActions();
-    if (customActions == null) {
-      return ImmutableList.of();
-    }
     ImmutableList.Builder<CommandButton> customLayout = new ImmutableList.Builder<>();
     for (CustomAction customAction : customActions) {
       String action = customAction.getAction();
@@ -1520,13 +1540,25 @@ import java.util.concurrent.TimeoutException;
                   MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT,
                   /* defaultValue= */ CommandButton.ICON_UNDEFINED)
               : CommandButton.ICON_UNDEFINED;
-      CommandButton button =
+      CommandButton.Builder button =
           new CommandButton.Builder(icon, customAction.getIcon())
               .setSessionCommand(new SessionCommand(action, extras == null ? Bundle.EMPTY : extras))
               .setDisplayName(customAction.getName())
-              .setEnabled(true)
-              .build();
-      customLayout.add(button);
+              .setEnabled(true);
+      @Nullable
+      String iconUriString =
+          extras != null
+              ? extras.getString(MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT)
+              : null;
+      if (iconUriString != null) {
+        Uri iconUri = Uri.parse(iconUriString);
+        @Nullable String scheme = iconUri.getScheme();
+        if (Objects.equals(scheme, ContentResolver.SCHEME_CONTENT)
+            || Objects.equals(scheme, ContentResolver.SCHEME_ANDROID_RESOURCE)) {
+          button.setIconUri(iconUri);
+        }
+      }
+      customLayout.add(button.build());
     }
     return CommandButton.getMediaButtonPreferencesFromCustomLayout(
         customLayout.build(), availablePlayerCommands, sessionExtras);

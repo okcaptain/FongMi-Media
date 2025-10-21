@@ -15,16 +15,18 @@
  */
 package androidx.media3.exoplayer.audio;
 
+import static androidx.media3.common.util.Util.isEncodingLinearPcm;
 import static java.lang.Math.min;
 
-import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.audio.BaseAudioProcessor;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import java.nio.ByteBuffer;
 
 /** Audio processor for trimming samples from the start/end of data. */
-/* package */ final class TrimmingAudioProcessor extends BaseAudioProcessor {
+@UnstableApi
+public final class TrimmingAudioProcessor extends BaseAudioProcessor {
 
   private int trimStartFrames;
   private int trimEndFrames;
@@ -78,8 +80,7 @@ import java.nio.ByteBuffer;
   @Override
   public AudioFormat onConfigure(AudioFormat inputAudioFormat)
       throws UnhandledAudioFormatException {
-    if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT
-        && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) {
+    if (!isEncodingLinearPcm(inputAudioFormat.encoding)) {
       throw new UnhandledAudioFormatException(inputAudioFormat);
     }
     reconfigurationPending = true;

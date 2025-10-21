@@ -623,6 +623,30 @@ public class SimpleExoPlayer extends BasePlayer implements ExoPlayer {
   }
 
   @Override
+  public void setScrubbingModeEnabled(boolean scrubbingModeEnabled) {
+    blockUntilConstructorFinished();
+    player.setScrubbingModeEnabled(scrubbingModeEnabled);
+  }
+
+  @Override
+  public boolean isScrubbingModeEnabled() {
+    blockUntilConstructorFinished();
+    return player.isScrubbingModeEnabled();
+  }
+
+  @Override
+  public void setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters) {
+    blockUntilConstructorFinished();
+    player.setScrubbingModeParameters(scrubbingModeParameters);
+  }
+
+  @Override
+  public ScrubbingModeParameters getScrubbingModeParameters() {
+    blockUntilConstructorFinished();
+    return player.getScrubbingModeParameters();
+  }
+
+  @Override
   public AnalyticsCollector getAnalyticsCollector() {
     blockUntilConstructorFinished();
     return player.getAnalyticsCollector();
@@ -903,6 +927,12 @@ public class SimpleExoPlayer extends BasePlayer implements ExoPlayer {
   public void setShuffleOrder(ShuffleOrder shuffleOrder) {
     blockUntilConstructorFinished();
     player.setShuffleOrder(shuffleOrder);
+  }
+
+  @Override
+  public ShuffleOrder getShuffleOrder() {
+    blockUntilConstructorFinished();
+    return player.getShuffleOrder();
   }
 
   @Override

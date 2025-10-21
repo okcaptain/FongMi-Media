@@ -113,7 +113,7 @@ public final class DashMediaSource extends BaseMediaSource {
     private final DashChunkSource.Factory chunkSourceFactory;
     @Nullable private final DataSource.Factory manifestDataSourceFactory;
 
-    private CmcdConfiguration.Factory cmcdConfigurationFactory;
+    @Nullable private CmcdConfiguration.Factory cmcdConfigurationFactory;
     private DrmSessionManagerProvider drmSessionManagerProvider;
     private CompositeSequenceableLoaderFactory compositeSequenceableLoaderFactory;
     private LoadErrorHandlingPolicy loadErrorHandlingPolicy;
@@ -728,15 +728,21 @@ public final class DashMediaSource extends BaseMediaSource {
 
     synchronized (manifestUriLock) {
       // Checks whether replaceManifestUri(Uri) was called to manually replace the URI between the
-      // start and end of this load. If it was then isSameUriInstance evaluates to false, and we
-      // prefer the manual replacement to one derived from the previous request.
-      @SuppressWarnings("ReferenceEquality")
-      boolean isSameUriInstance = loadable.dataSpec.uri == manifestUri;
-      if (isSameUriInstance) {
+      // start and end of this load. If it was then useUriFromPreviousRequest evaluates to false,
+      // and we prefer the manual replacement to one derived from the previous request.
+      boolean useUriFromPreviousRequest =
+          loadable.dataSpec.uri.equals(manifestUri)
+              || (cmcdConfiguration != null
+                  && CmcdData.removeFromUri(loadable.dataSpec.uri).equals(manifestUri));
+
+      if (useUriFromPreviousRequest) {
         // Replace the manifest URI with one specified by a manifest Location element (if present),
         // or with the final (possibly redirected) URI. This follows the recommendation in
         // DASH-IF-IOP 4.3, section 3.2.15.3. See: https://dashif.org/docs/DASH-IF-IOP-v4.3.pdf.
-        manifestUri = manifest.location != null ? manifest.location : loadable.getUri();
+        manifestUri =
+            manifest.location != null
+                ? manifest.location
+                : CmcdData.removeFromUri(loadable.getUri());
       }
     }
 

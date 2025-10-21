@@ -15,18 +15,9 @@
  */
 package androidx.media3.session;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.common.util.Util.msToUs;
-import static androidx.media3.common.util.Util.postOrRun;
-import static androidx.media3.session.MediaConstants.EXTRAS_KEY_MEDIA_ID_COMPAT;
-import static androidx.media3.session.MediaConstants.EXTRAS_KEY_PLAYBACK_SPEED_COMPAT;
-import static androidx.media3.session.MediaUtils.intersect;
 
-import android.media.AudioManager;
-import android.os.Bundle;
-import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Surface;
@@ -48,13 +39,7 @@ import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
 import androidx.media3.common.text.CueGroup;
-import androidx.media3.common.util.Log;
 import androidx.media3.common.util.Size;
-import androidx.media3.common.util.Util;
-import androidx.media3.session.legacy.MediaSessionCompat;
-import androidx.media3.session.legacy.PlaybackStateCompat;
-import androidx.media3.session.legacy.VolumeProviderCompat;
-import com.google.common.collect.ImmutableList;
 import java.util.List;
 
 /**
@@ -64,175 +49,8 @@ import java.util.List;
  */
 /* package */ final class PlayerWrapper extends ForwardingPlayer {
 
-  /** Describes a legacy error. */
-  public static final class LegacyError {
-    public final boolean isFatal;
-    @PlaybackStateCompat.ErrorCode public final int code;
-    @Nullable public final String message;
-    public final Bundle extras;
-
-    /** Creates an instance. */
-    private LegacyError(
-        boolean isFatal,
-        @PlaybackStateCompat.ErrorCode int code,
-        @Nullable String message,
-        @Nullable Bundle extras) {
-      this.isFatal = isFatal;
-      this.code = code;
-      this.message = message;
-      this.extras = extras != null ? extras : Bundle.EMPTY;
-    }
-  }
-
-  private final boolean playIfSuppressed;
-  @Nullable private LegacyError legacyError;
-  private Bundle legacyExtras;
-  private ImmutableList<CommandButton> customLayout;
-  private ImmutableList<CommandButton> mediaButtonPreferences;
-  private SessionCommands availableSessionCommands;
-  private Commands availablePlayerCommands;
-
-  public PlayerWrapper(
-      Player player,
-      boolean playIfSuppressed,
-      ImmutableList<CommandButton> customLayout,
-      ImmutableList<CommandButton> mediaButtonPreferences,
-      SessionCommands availableSessionCommands,
-      Commands availablePlayerCommands,
-      Bundle legacyExtras) {
+  public PlayerWrapper(Player player) {
     super(player);
-    this.playIfSuppressed = playIfSuppressed;
-    this.customLayout = customLayout;
-    this.mediaButtonPreferences = mediaButtonPreferences;
-    this.availableSessionCommands = availableSessionCommands;
-    this.availablePlayerCommands = availablePlayerCommands;
-    this.legacyExtras = new Bundle(legacyExtras);
-    if (!mediaButtonPreferences.isEmpty()) {
-      updateCustomLayoutAndLegacyExtrasForMediaButtonPreferences();
-    }
-  }
-
-  /**
-   * Sets new available commands for the platform session.
-   *
-   * @param availableSessionCommands The {@link SessionCommands}.
-   * @param availablePlayerCommands The {@link Player.Commands}.
-   * @return Whether the {@linkplain #getLegacyExtras platform session extras} were updated as a
-   *     result of this change.
-   */
-  public boolean setAvailableCommands(
-      SessionCommands availableSessionCommands, Commands availablePlayerCommands) {
-    this.availableSessionCommands = availableSessionCommands;
-    this.availablePlayerCommands = availablePlayerCommands;
-    if (mediaButtonPreferences.isEmpty()) {
-      return false;
-    }
-    boolean hadPrevReservation =
-        legacyExtras.getBoolean(
-            MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV, /* defaultValue= */ false);
-    boolean hadNextReservation =
-        legacyExtras.getBoolean(
-            MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT, /* defaultValue= */ false);
-    updateCustomLayoutAndLegacyExtrasForMediaButtonPreferences();
-    return (legacyExtras.getBoolean(
-                MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV, /* defaultValue= */ false)
-            != hadPrevReservation)
-        || (legacyExtras.getBoolean(
-                MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT, /* defaultValue= */ false)
-            != hadNextReservation);
-  }
-
-  public SessionCommands getAvailableSessionCommands() {
-    return availableSessionCommands;
-  }
-
-  public Commands getAvailablePlayerCommands() {
-    return availablePlayerCommands;
-  }
-
-  public void setCustomLayout(ImmutableList<CommandButton> customLayout) {
-    this.customLayout = customLayout;
-  }
-
-  /**
-   * Sets new media button preferences.
-   *
-   * @param mediaButtonPreferences The list of {@link CommandButton} defining the media button
-   *     preferences.
-   * @return Whether the {@linkplain #getLegacyExtras platform session extras} were updated as a
-   *     result of this change.
-   */
-  public boolean setMediaButtonPreferences(ImmutableList<CommandButton> mediaButtonPreferences) {
-    this.mediaButtonPreferences = mediaButtonPreferences;
-    boolean hadPrevReservation =
-        legacyExtras.getBoolean(
-            MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV, /* defaultValue= */ false);
-    boolean hadNextReservation =
-        legacyExtras.getBoolean(
-            MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT, /* defaultValue= */ false);
-    updateCustomLayoutAndLegacyExtrasForMediaButtonPreferences();
-    return (legacyExtras.getBoolean(
-                MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV, /* defaultValue= */ false)
-            != hadPrevReservation)
-        || (legacyExtras.getBoolean(
-                MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT, /* defaultValue= */ false)
-            != hadNextReservation);
-  }
-
-  /* package */ ImmutableList<CommandButton> getCustomLayout() {
-    return customLayout;
-  }
-
-  /* package */ ImmutableList<CommandButton> getMediaButtonPreferences() {
-    return mediaButtonPreferences;
-  }
-
-  public void setLegacyExtras(Bundle extras) {
-    checkArgument(!extras.containsKey(EXTRAS_KEY_PLAYBACK_SPEED_COMPAT));
-    checkArgument(!extras.containsKey(EXTRAS_KEY_MEDIA_ID_COMPAT));
-    this.legacyExtras = new Bundle(extras);
-    if (!mediaButtonPreferences.isEmpty()) {
-      // Re-calculate custom layout in case we have to set any additional extras.
-      updateCustomLayoutAndLegacyExtrasForMediaButtonPreferences();
-    }
-  }
-
-  public Bundle getLegacyExtras() {
-    return legacyExtras;
-  }
-
-  /**
-   * Sets the legacy error that will be used when the next {@linkplain #createPlaybackStateCompat()
-   * legacy playback state is created}.
-   *
-   * <p>This sets the legacy {@link PlaybackStateCompat} to {@link PlaybackStateCompat#STATE_ERROR}
-   * if the error is fatal, calls {@link PlaybackStateCompat.Builder#setErrorMessage(int,
-   * CharSequence)} and includes the entries of the extras in the {@link Bundle} set with {@link
-   * PlaybackStateCompat.Builder#setExtras(Bundle)}.
-   *
-   * <p>Use {@link #clearLegacyErrorStatus()} to clear the error.
-   *
-   * @param isFatal Whether the legacy error is fatal.
-   * @param errorCode The legacy error code.
-   * @param errorMessage The legacy error message.
-   * @param extras The extras.
-   */
-  public void setLegacyError(boolean isFatal, int errorCode, String errorMessage, Bundle extras) {
-    legacyError = new LegacyError(isFatal, errorCode, errorMessage, extras);
-  }
-
-  /** Returns the legacy error or null if not set. */
-  @Nullable
-  public LegacyError getLegacyError() {
-    return legacyError;
-  }
-
-  /**
-   * Clears the legacy error to resolve the error when {@linkplain #createPlaybackStateCompat()
-   * creating} the next legacy playback state.
-   */
-  public void clearLegacyErrorStatus() {
-    legacyError = null;
   }
 
   @Override
@@ -618,22 +436,6 @@ import java.util.List;
     super.replaceMediaItems(fromIndex, toIndex, mediaItems);
   }
 
-  @SuppressWarnings("deprecation") // Forwarding deprecated call
-  @Deprecated
-  @Override
-  public boolean hasNext() {
-    verifyApplicationThread();
-    return super.hasNext();
-  }
-
-  @SuppressWarnings("deprecation") // Forwarding deprecated call
-  @Deprecated
-  @Override
-  public boolean hasNextWindow() {
-    verifyApplicationThread();
-    return super.hasNextWindow();
-  }
-
   @Override
   public boolean hasPreviousMediaItem() {
     verifyApplicationThread();
@@ -644,30 +446,6 @@ import java.util.List;
   public boolean hasNextMediaItem() {
     verifyApplicationThread();
     return super.hasNextMediaItem();
-  }
-
-  @SuppressWarnings("deprecation") // Forwarding deprecated call
-  @Deprecated
-  @Override
-  public void next() {
-    verifyApplicationThread();
-    super.next();
-  }
-
-  @SuppressWarnings("deprecation") // Forwarding deprecated call
-  @Deprecated
-  @Override
-  public void seekToPreviousWindow() {
-    verifyApplicationThread();
-    super.seekToPreviousWindow();
-  }
-
-  @SuppressWarnings("deprecation") // Forwarding deprecated call
-  @Deprecated
-  @Override
-  public void seekToNextWindow() {
-    verifyApplicationThread();
-    super.seekToNextWindow();
   }
 
   @Override
@@ -814,7 +592,7 @@ import java.util.List;
   }
 
   public float getVolumeWithCommandCheck() {
-    return isCommandAvailable(COMMAND_GET_VOLUME) ? getVolume() : 0;
+    return isCommandAvailable(COMMAND_GET_VOLUME) ? getVolume() : 1;
   }
 
   @Override
@@ -1068,199 +846,12 @@ import java.util.List;
     return super.getSurfaceSize();
   }
 
-  public PlaybackStateCompat createPlaybackStateCompat() {
-    LegacyError legacyError = this.legacyError;
-    if (legacyError != null && legacyError.isFatal) {
-      Bundle extras = new Bundle(legacyError.extras);
-      extras.putAll(legacyExtras);
-      return new PlaybackStateCompat.Builder()
-          .setState(
-              PlaybackStateCompat.STATE_ERROR,
-              /* position= */ PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
-              /* playbackSpeed= */ .0f,
-              /* updateTime= */ SystemClock.elapsedRealtime())
-          .setActions(0)
-          .setBufferedPosition(0)
-          .setExtras(extras)
-          .setErrorMessage(legacyError.code, checkNotNull(legacyError.message))
-          .setExtras(legacyError.extras)
-          .build();
-    }
-    @Nullable PlaybackException playerError = getPlayerError();
-    boolean shouldShowPlayButton = Util.shouldShowPlayButton(/* player= */ this, playIfSuppressed);
-    int state =
-        LegacyConversions.convertToPlaybackStateCompatState(
-            /* player= */ this, shouldShowPlayButton);
-    // Always advertise ACTION_SET_RATING.
-    long actions = PlaybackStateCompat.ACTION_SET_RATING;
-    Commands availableCommands = intersect(availablePlayerCommands, getAvailableCommands());
-    for (int i = 0; i < availableCommands.size(); i++) {
-      actions |=
-          convertCommandToPlaybackStateActions(availableCommands.get(i), shouldShowPlayButton);
-    }
-    if (!mediaButtonPreferences.isEmpty()
-        && !legacyExtras.getBoolean(MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV)) {
-      actions &= ~PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
-    }
-    if (!mediaButtonPreferences.isEmpty()
-        && !legacyExtras.getBoolean(MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT)) {
-      actions &= ~PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
-    }
-    long queueItemId =
-        isCommandAvailable(COMMAND_GET_TIMELINE)
-            ? LegacyConversions.convertToQueueItemId(getCurrentMediaItemIndex())
-            : MediaSessionCompat.QueueItem.UNKNOWN_ID;
-    float playbackSpeed = getPlaybackParameters().speed;
-    float sessionPlaybackSpeed = isPlaying() ? playbackSpeed : 0f;
-    Bundle extras = legacyError != null ? new Bundle(legacyError.extras) : new Bundle();
-    extras.putAll(legacyExtras);
-    extras.putFloat(EXTRAS_KEY_PLAYBACK_SPEED_COMPAT, playbackSpeed);
-    @Nullable MediaItem currentMediaItem = getCurrentMediaItemWithCommandCheck();
-    if (currentMediaItem != null && !MediaItem.DEFAULT_MEDIA_ID.equals(currentMediaItem.mediaId)) {
-      extras.putString(EXTRAS_KEY_MEDIA_ID_COMPAT, currentMediaItem.mediaId);
-    }
-    boolean canReadPositions = isCommandAvailable(Player.COMMAND_GET_CURRENT_MEDIA_ITEM);
-    long compatPosition =
-        canReadPositions ? getCurrentPosition() : PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN;
-    long compatBufferedPosition = canReadPositions ? getBufferedPosition() : 0;
-    PlaybackStateCompat.Builder builder =
-        new PlaybackStateCompat.Builder()
-            .setState(state, compatPosition, sessionPlaybackSpeed, SystemClock.elapsedRealtime())
-            .setActions(actions)
-            .setActiveQueueItemId(queueItemId)
-            .setBufferedPosition(compatBufferedPosition)
-            .setExtras(extras);
-    for (int i = 0; i < customLayout.size(); i++) {
-      CommandButton commandButton = customLayout.get(i);
-      SessionCommand sessionCommand = commandButton.sessionCommand;
-      if (sessionCommand != null
-          && commandButton.isEnabled
-          && sessionCommand.commandCode == SessionCommand.COMMAND_CODE_CUSTOM
-          && CommandButton.isButtonCommandAvailable(
-              commandButton, availableSessionCommands, availableCommands)) {
-        Bundle actionExtras = sessionCommand.customExtras;
-        if (commandButton.icon != CommandButton.ICON_UNDEFINED) {
-          actionExtras = new Bundle(sessionCommand.customExtras);
-          actionExtras.putInt(
-              MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT, commandButton.icon);
-        }
-        builder.addCustomAction(
-            new PlaybackStateCompat.CustomAction.Builder(
-                    sessionCommand.customAction, commandButton.displayName, commandButton.iconResId)
-                .setExtras(actionExtras)
-                .build());
-      }
-    }
-    if (playerError != null) {
-      builder.setErrorMessage(
-          LegacyConversions.convertToLegacyErrorCode(playerError), playerError.getMessage());
-    } else if (legacyError != null) {
-      builder.setErrorMessage(legacyError.code, legacyError.message);
-    }
-    return builder.build();
-  }
-
-  @Nullable
-  @SuppressWarnings("deprecation") // Backwards compatibility with old volume commands
-  public VolumeProviderCompat createVolumeProviderCompat() {
-    if (getDeviceInfo().playbackType == DeviceInfo.PLAYBACK_TYPE_LOCAL) {
-      return null;
-    }
-    Commands availableCommands = getAvailableCommands();
-    int volumeControlType = VolumeProviderCompat.VOLUME_CONTROL_FIXED;
-    if (availableCommands.containsAny(
-        COMMAND_ADJUST_DEVICE_VOLUME, COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-      volumeControlType = VolumeProviderCompat.VOLUME_CONTROL_RELATIVE;
-      if (availableCommands.containsAny(
-          COMMAND_SET_DEVICE_VOLUME, COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)) {
-        volumeControlType = VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE;
-      }
-    }
-    Handler handler = new Handler(getApplicationLooper());
-    int currentVolume = getDeviceVolumeWithCommandCheck();
-    int legacyVolumeFlag = C.VOLUME_FLAG_SHOW_UI;
-    DeviceInfo deviceInfo = getDeviceInfo();
-    return new VolumeProviderCompat(
-        volumeControlType, deviceInfo.maxVolume, currentVolume, deviceInfo.routingControllerId) {
-      @Override
-      public void onSetVolumeTo(int volume) {
-        postOrRun(
-            handler,
-            () -> {
-              if (!isCommandAvailable(COMMAND_SET_DEVICE_VOLUME)
-                  && !isCommandAvailable(COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)) {
-                return;
-              }
-              if (isCommandAvailable(COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)) {
-                setDeviceVolume(volume, legacyVolumeFlag);
-              } else {
-                setDeviceVolume(volume);
-              }
-            });
-      }
-
-      @Override
-      public void onAdjustVolume(int direction) {
-        postOrRun(
-            handler,
-            () -> {
-              if (!isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME)
-                  && !isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                return;
-              }
-              switch (direction) {
-                case AudioManager.ADJUST_RAISE:
-                  if (isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                    increaseDeviceVolume(legacyVolumeFlag);
-                  } else {
-                    increaseDeviceVolume();
-                  }
-                  break;
-                case AudioManager.ADJUST_LOWER:
-                  if (isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                    decreaseDeviceVolume(legacyVolumeFlag);
-                  } else {
-                    decreaseDeviceVolume();
-                  }
-                  break;
-                case AudioManager.ADJUST_MUTE:
-                  if (isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                    setDeviceMuted(true, legacyVolumeFlag);
-                  } else {
-                    setDeviceMuted(true);
-                  }
-                  break;
-                case AudioManager.ADJUST_UNMUTE:
-                  if (isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                    setDeviceMuted(false, legacyVolumeFlag);
-                  } else {
-                    setDeviceMuted(false);
-                  }
-                  break;
-                case AudioManager.ADJUST_TOGGLE_MUTE:
-                  if (isCommandAvailable(COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                    setDeviceMuted(!isDeviceMutedWithCommandCheck(), legacyVolumeFlag);
-                  } else {
-                    setDeviceMuted(!isDeviceMutedWithCommandCheck());
-                  }
-                  break;
-                default:
-                  Log.w(
-                      "VolumeProviderCompat",
-                      "onAdjustVolume: Ignoring unknown direction: " + direction);
-                  break;
-              }
-            });
-      }
-    };
-  }
-
   /**
-   * Creates a {@link PositionInfo} of this player for Bundling.
+   * Creates a {@link PositionInfo} of this player.
    *
    * <p>This excludes window uid and period uid that wouldn't be preserved when bundling.
    */
-  public PositionInfo createPositionInfoForBundling() {
+  public PositionInfo createPositionInfo() {
     boolean canAccessCurrentMediaItem = isCommandAvailable(COMMAND_GET_CURRENT_MEDIA_ITEM);
     boolean canAccessTimeline = isCommandAvailable(COMMAND_GET_TIMELINE);
     return new PositionInfo(
@@ -1276,14 +867,14 @@ import java.util.List;
   }
 
   /**
-   * Creates a {@link SessionPositionInfo} of this player for Bundling.
+   * Creates a {@link SessionPositionInfo} of this player.
    *
    * <p>This excludes window uid and period uid that wouldn't be preserved when bundling.
    */
-  public SessionPositionInfo createSessionPositionInfoForBundling() {
+  public SessionPositionInfo createSessionPositionInfo() {
     boolean canAccessCurrentMediaItem = isCommandAvailable(COMMAND_GET_CURRENT_MEDIA_ITEM);
     return new SessionPositionInfo(
-        createPositionInfoForBundling(),
+        createPositionInfo(),
         canAccessCurrentMediaItem && isPlayingAd(),
         /* eventTimeMs= */ SystemClock.elapsedRealtime(),
         canAccessCurrentMediaItem ? getDuration() : C.TIME_UNSET,
@@ -1295,13 +886,17 @@ import java.util.List;
         canAccessCurrentMediaItem ? getContentBufferedPosition() : 0);
   }
 
-  public PlayerInfo createPlayerInfoForBundling() {
+  /**
+   * Creates the initial {@link PlayerInfo} from this player, filling in defaults for fields that
+   * can't be obtained from the player directly (e.g. change reasons).
+   */
+  public PlayerInfo createInitialPlayerInfo() {
     return new PlayerInfo(
         getPlayerError(),
         PlayerInfo.MEDIA_ITEM_TRANSITION_REASON_DEFAULT,
-        createSessionPositionInfoForBundling(),
-        createPositionInfoForBundling(),
-        createPositionInfoForBundling(),
+        createSessionPositionInfo(),
+        createPositionInfo(),
+        createPositionInfo(),
         PlayerInfo.DISCONTINUITY_REASON_DEFAULT,
         getPlaybackParameters(),
         getRepeatMode(),
@@ -1332,87 +927,6 @@ import java.util.List;
 
   private void verifyApplicationThread() {
     checkState(Looper.myLooper() == getApplicationLooper());
-  }
-
-  private void updateCustomLayoutAndLegacyExtrasForMediaButtonPreferences() {
-    ImmutableList<CommandButton> mediaButtonPreferencesWithUnavailableButtonsDisabled =
-        CommandButton.copyWithUnavailableButtonsDisabled(
-            mediaButtonPreferences, availableSessionCommands, availablePlayerCommands);
-    customLayout =
-        CommandButton.getCustomLayoutFromMediaButtonPreferences(
-            mediaButtonPreferencesWithUnavailableButtonsDisabled,
-            /* backSlotAllowed= */ true,
-            /* forwardSlotAllowed= */ true);
-    legacyExtras.putBoolean(
-        MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV,
-        !CommandButton.containsButtonForSlot(customLayout, CommandButton.SLOT_BACK));
-    legacyExtras.putBoolean(
-        MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT,
-        !CommandButton.containsButtonForSlot(customLayout, CommandButton.SLOT_FORWARD));
-  }
-
-  @SuppressWarnings("deprecation") // Uses deprecated PlaybackStateCompat actions.
-  private static long convertCommandToPlaybackStateActions(
-      @Command int command, boolean shouldShowPlayButton) {
-    switch (command) {
-      case Player.COMMAND_PLAY_PAUSE:
-        return shouldShowPlayButton
-            ? PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PLAY_PAUSE
-            : PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_PLAY_PAUSE;
-      case Player.COMMAND_PREPARE:
-        return PlaybackStateCompat.ACTION_PREPARE;
-      case Player.COMMAND_SEEK_BACK:
-        return PlaybackStateCompat.ACTION_REWIND;
-      case Player.COMMAND_SEEK_FORWARD:
-        return PlaybackStateCompat.ACTION_FAST_FORWARD;
-      case Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM:
-        return PlaybackStateCompat.ACTION_SEEK_TO;
-      case Player.COMMAND_SEEK_TO_MEDIA_ITEM:
-        return PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM;
-      case Player.COMMAND_SEEK_TO_NEXT:
-      case Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM:
-        return PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
-      case Player.COMMAND_SEEK_TO_PREVIOUS:
-      case Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM:
-        return PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
-      case Player.COMMAND_SET_MEDIA_ITEM:
-        return PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
-            | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH
-            | PlaybackStateCompat.ACTION_PLAY_FROM_URI
-            | PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID
-            | PlaybackStateCompat.ACTION_PREPARE_FROM_SEARCH
-            | PlaybackStateCompat.ACTION_PREPARE_FROM_URI;
-      case Player.COMMAND_SET_REPEAT_MODE:
-        return PlaybackStateCompat.ACTION_SET_REPEAT_MODE;
-      case Player.COMMAND_SET_SPEED_AND_PITCH:
-        return PlaybackStateCompat.ACTION_SET_PLAYBACK_SPEED;
-      case Player.COMMAND_SET_SHUFFLE_MODE:
-        return PlaybackStateCompat.ACTION_SET_SHUFFLE_MODE
-            | PlaybackStateCompat.ACTION_SET_SHUFFLE_MODE_ENABLED;
-      case Player.COMMAND_STOP:
-        return PlaybackStateCompat.ACTION_STOP;
-      case Player.COMMAND_ADJUST_DEVICE_VOLUME:
-      case Player.COMMAND_CHANGE_MEDIA_ITEMS:
-      // TODO(b/227346735): Handle this through
-      // MediaSessionCompat.setFlags(FLAG_HANDLES_QUEUE_COMMANDS)
-      case Player.COMMAND_GET_AUDIO_ATTRIBUTES:
-      case Player.COMMAND_GET_CURRENT_MEDIA_ITEM:
-      case Player.COMMAND_GET_DEVICE_VOLUME:
-      case Player.COMMAND_GET_METADATA:
-      case Player.COMMAND_GET_TEXT:
-      case Player.COMMAND_GET_TIMELINE:
-      case Player.COMMAND_GET_TRACKS:
-      case Player.COMMAND_GET_VOLUME:
-      case Player.COMMAND_INVALID:
-      case Player.COMMAND_SEEK_TO_DEFAULT_POSITION:
-      case Player.COMMAND_SET_DEVICE_VOLUME:
-      case Player.COMMAND_SET_PLAYLIST_METADATA:
-      case Player.COMMAND_SET_TRACK_SELECTION_PARAMETERS:
-      case Player.COMMAND_SET_VIDEO_SURFACE:
-      case Player.COMMAND_SET_VOLUME:
-      default:
-        return 0;
-    }
   }
 
   private static final class CurrentMediaItemOnlyTimeline extends Timeline {

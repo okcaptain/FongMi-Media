@@ -15,6 +15,7 @@
  */
 package androidx.media3.session;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkArgument;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkState;
@@ -92,6 +93,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 /* package */ class MediaControllerImplLegacy implements MediaController.MediaControllerImpl {
 
   private static final String TAG = "MCImplLegacy";
+
+  private static final long WAIT_TIME_MS_FOR_COMPAT_EXTRA_BINDER = 500;
 
   /* package */ final Context context;
   private final MediaController instance;
@@ -1232,7 +1235,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
   @Override
   public void setDeviceMuted(boolean muted, @C.VolumeFlags int flags) {
-    if (Util.SDK_INT < 23) {
+    if (SDK_INT < 23) {
       Log.w(TAG, "Session doesn't support setting mute state at API level less than 23");
       return;
     }
@@ -1404,18 +1407,19 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
               controllerCompat.registerCallback(
                   controllerCompatCallback, getInstance().applicationHandler);
             });
-    // Post a runnable to prevent callbacks from being called by onConnected()
-    // before the constructor returns (b/196941334).
+    // Post a delayed runnable to mark session as connected if we are working with a framework
+    // session.
     getInstance()
         .applicationHandler
-        .post(
+        .postDelayed(
             () -> {
-              if (!controllerCompat.isSessionReady()) {
-                // If the session not ready here, then call onConnected() immediately. The session
-                // may be a framework MediaSession and we cannot know whether it can be ready later.
+              if (!released && !controllerCompat.isSessionReady()) {
+                // If the session not ready here, then call onConnected() and assume that the
+                // session is a framework MediaSession.
                 onConnected();
               }
-            });
+            },
+            WAIT_TIME_MS_FOR_COMPAT_EXTRA_BINDER);
   }
 
   private void connectToService() {
@@ -1699,7 +1703,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     if (!MediaUtils.areEqualError(
         oldLegacyPlayerInfo.playbackStateCompat, newLegacyPlayerInfo.playbackStateCompat)) {
       PlaybackException error =
-          LegacyConversions.convertToPlaybackException(newLegacyPlayerInfo.playbackStateCompat);
+          LegacyConversions.convertToPlaybackException(
+              newLegacyPlayerInfo.playbackStateCompat, context);
       listeners.queueEvent(
           Player.EVENT_PLAYER_ERROR, (listener) -> listener.onPlayerErrorChanged(error));
       if (error != null) {
@@ -1812,7 +1817,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
   @Nullable
   private static String getRoutingControllerId(MediaControllerCompat controllerCompat) {
-    if (Util.SDK_INT < 30) {
+    if (SDK_INT < 30) {
       return null;
     }
     android.media.session.MediaController fwkController =
@@ -2130,7 +2135,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     }
 
     PlaybackException playerError =
-        LegacyConversions.convertToPlaybackException(newLegacyPlayerInfo.playbackStateCompat);
+        LegacyConversions.convertToPlaybackException(
+            newLegacyPlayerInfo.playbackStateCompat, context);
     SessionError sessionError =
         LegacyConversions.convertToSessionError(newLegacyPlayerInfo.playbackStateCompat, context);
 

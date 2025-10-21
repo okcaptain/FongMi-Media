@@ -15,6 +15,7 @@
  */
 package androidx.media3.effect;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.GlUtil.getDefaultEglDisplay;
 import static androidx.media3.effect.DefaultVideoFrameProcessor.WORKING_COLOR_SPACE_DEFAULT;
@@ -41,7 +42,6 @@ import androidx.media3.common.VideoFrameProcessingException;
 import androidx.media3.common.util.GlUtil;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.common.util.Util;
 import com.google.common.collect.ImmutableList;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -68,14 +68,16 @@ public final class DebugViewShaderProgram implements GlShaderProgram {
   private Executor errorListenerExecutor;
 
   private @MonotonicNonNull EGLDisplay eglDisplay;
-  private int outputWidth = C.LENGTH_UNSET;
-  private int outputHeight = C.LENGTH_UNSET;
+  private int outputWidth;
+  private int outputHeight;
 
   public DebugViewShaderProgram(
       Context context, DebugViewProvider debugViewProvider, ColorInfo outputColorInfo) {
     this.context = context;
     this.debugViewProvider = debugViewProvider;
     this.outputColorInfo = outputColorInfo;
+    this.outputWidth = C.LENGTH_UNSET;
+    this.outputHeight = C.LENGTH_UNSET;
     inputListener = new InputListener() {};
     outputListener = new OutputListener() {};
     errorListener =
@@ -219,7 +221,7 @@ public final class DebugViewShaderProgram implements GlShaderProgram {
       // Therefore, convert HLG to PQ below API 34, so that HLG input can be displayed properly on
       // API 33.
       this.outputColorTransfer =
-          outputColorTransfer == C.COLOR_TRANSFER_HLG && Util.SDK_INT < 34
+          outputColorTransfer == C.COLOR_TRANSFER_HLG && SDK_INT < 34
               ? C.COLOR_TRANSFER_ST2084
               : outputColorTransfer;
       surfaceView.getHolder().addCallback(this);

@@ -15,9 +15,11 @@
  */
 package androidx.media3.exoplayer.trackselection;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED;
 import static androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_REQUIRED;
 import static androidx.media3.common.util.Assertions.checkNotNull;
+import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.exoplayer.RendererCapabilities.AUDIO_OFFLOAD_GAPLESS_SUPPORTED;
 import static androidx.media3.exoplayer.RendererCapabilities.AUDIO_OFFLOAD_NOT_SUPPORTED;
@@ -90,6 +92,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
 /**
  * A default {@link TrackSelector} suitable for most use cases.
@@ -668,12 +671,8 @@ public class DefaultTrackSelector extends MappingTrackSelector
       return this;
     }
 
-    /**
-     * @deprecated Use {@link #setTrackTypeDisabled(int, boolean)}.
-     */
     @CanIgnoreReturnValue
     @Override
-    @Deprecated
     @SuppressWarnings("deprecation") // Intentionally returning deprecated type
     public ParametersBuilder setDisabledTrackTypes(Set<@C.TrackType Integer> disabledTrackTypes) {
       delegate.setDisabledTrackTypes(disabledTrackTypes);
@@ -1527,13 +1526,8 @@ public class DefaultTrackSelector extends MappingTrackSelector
         return this;
       }
 
-      /**
-       * @deprecated Use {@link #setTrackTypeDisabled(int, boolean)}.
-       */
       @CanIgnoreReturnValue
       @Override
-      @Deprecated
-      @SuppressWarnings("deprecation")
       public Builder setDisabledTrackTypes(Set<@C.TrackType Integer> disabledTrackTypes) {
         super.setDisabledTrackTypes(disabledTrackTypes);
         return this;
@@ -2411,8 +2405,13 @@ public class DefaultTrackSelector extends MappingTrackSelector
   @GuardedBy("lock")
   private Parameters parameters;
 
+  @GuardedBy("lock")
+  @Nullable
+  private Thread playbackThread;
+
   @Nullable private SpatializerWrapperV32 spatializer;
   private AudioAttributes audioAttributes;
+  private @MonotonicNonNull Boolean deviceIsTV;
 
   /**
    * @param context Any {@link Context}.
@@ -2491,8 +2490,16 @@ public class DefaultTrackSelector extends MappingTrackSelector
 
   @Override
   public void release() {
-    if (Util.SDK_INT >= 32 && spatializer != null) {
+    synchronized (lock) {
+      if (playbackThread != null) {
+        checkState(
+            playbackThread == Thread.currentThread(),
+            "DefaultTrackSelector is accessed on the wrong thread.");
+      }
+    }
+    if (SDK_INT >= 32 && spatializer != null) {
       spatializer.release();
+      spatializer = null;
     }
     super.release();
   }
@@ -2598,12 +2605,17 @@ public class DefaultTrackSelector extends MappingTrackSelector
           throws ExoPlaybackException {
     Parameters parameters;
     synchronized (lock) {
+      playbackThread = Thread.currentThread();
       parameters = this.parameters;
     }
+    if (deviceIsTV == null && context != null) {
+      deviceIsTV = Util.isTv(context);
+    }
     if (parameters.constrainAudioChannelCountToDeviceCapabilities
-        && Util.SDK_INT >= 32
+        && SDK_INT >= 32
         && spatializer == null) {
-      spatializer = new SpatializerWrapperV32(context, /* defaultTrackSelector= */ this);
+      spatializer =
+          new SpatializerWrapperV32(context, /* defaultTrackSelector= */ this, deviceIsTV);
     }
     int rendererCount = mappedTrackInfo.getRendererCount();
     ExoTrackSelection.@NullableType Definition[] definitions =
@@ -2875,12 +2887,11 @@ public class DefaultTrackSelector extends MappingTrackSelector
   private boolean isAudioFormatWithinAudioChannelCountConstraints(
       Format format, Parameters parameters) {
     return !parameters.constrainAudioChannelCountToDeviceCapabilities
+        || (deviceIsTV != null && deviceIsTV)
         || (format.channelCount == Format.NO_VALUE || format.channelCount <= 2)
         || (isDolbyAudio(format)
-            && (Util.SDK_INT < 32
-                || spatializer == null
-                || !spatializer.isSpatializationSupported()))
-        || (Util.SDK_INT >= 32
+            && (SDK_INT < 32 || spatializer == null || !spatializer.isSpatializationSupported()))
+        || (SDK_INT >= 32
             && spatializer != null
             && spatializer.isSpatializationSupported()
             && spatializer.isAvailable()
@@ -3074,7 +3085,7 @@ public class DefaultTrackSelector extends MappingTrackSelector
     synchronized (lock) {
       shouldInvalidate =
           parameters.constrainAudioChannelCountToDeviceCapabilities
-              && Util.SDK_INT >= 32
+              && SDK_INT >= 32
               && spatializer != null
               && spatializer.isSpatializationSupported();
     }
@@ -4278,12 +4289,13 @@ public class DefaultTrackSelector extends MappingTrackSelector
     @Nullable private final Spatializer.OnSpatializerStateChangedListener listener;
 
     public SpatializerWrapperV32(
-        @Nullable Context context, DefaultTrackSelector defaultTrackSelector) {
+        @Nullable Context context,
+        DefaultTrackSelector defaultTrackSelector,
+        @Nullable Boolean deviceIsTv) {
       @Nullable
       AudioManager audioManager =
           context == null ? null : AudioManagerCompat.getAudioManager(context);
-      ;
-      if (audioManager == null || Util.isTv(checkNotNull(context))) {
+      if (audioManager == null || (deviceIsTv != null && deviceIsTv)) {
         spatializer = null;
         spatializationSupported = false;
         handler = null;

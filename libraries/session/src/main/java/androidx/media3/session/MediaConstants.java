@@ -171,6 +171,9 @@ public final class MediaConstants {
    * {@link Bundle} value used in {@link MediaMetadata#extras} to indicate that the corresponding
    * {@link MediaItem} has been partially played by the user.
    *
+   * <p>{@link #EXTRAS_KEY_COMPLETION_PERCENTAGE} must be specified to indicate how far the item has
+   * been played.
+   *
    * @see MediaMetadata.Builder#setExtras(Bundle)
    * @see MediaMetadata#extras
    * @see #EXTRAS_KEY_COMPLETION_STATUS
@@ -477,13 +480,21 @@ public final class MediaConstants {
       "androidx.media3.session.EXTRAS_KEY_MEDIA_TYPE_COMPAT";
 
   /**
-   * {@link Bundle} key used to indicate the {@link CommandButton.Icon} in the extras of the legacy
-   * {@link PlaybackStateCompat.CustomAction}. The corresponding value should be one of the {@code
-   * CommandButton.ICON_} integer constants.
+   * {@link Bundle} key used to indicate the {@link CommandButton.Icon} in the extras of the
+   * platform {@link android.media.session.PlaybackState.CustomAction}. The corresponding value
+   * should be one of the {@code CommandButton.ICON_} integer constants.
    */
   @UnstableApi
   public static final String EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT =
       "androidx.media3.session.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT";
+
+  /**
+   * {@link Bundle} key used to indicate the custom icon Uri of a {@link CommandButton} in the
+   * extras of the platform {@link android.media.session.PlaybackState.CustomAction}.
+   */
+  @UnstableApi
+  public static final String EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT =
+      "androidx.media3.session.EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT";
 
   /**
    * {@link Bundle} key used to store the title in case there was a display title that was given

@@ -618,6 +618,17 @@
             "image_duration_ms": 2000
           }
         ]
+      },
+      {
+        "name": "Change in crop b/409036359",
+        "playlist": [
+          {
+            "uri": "https://storage.googleapis.com/exoplayer-test-media-1/mp4/bbb_760x480_1mbps_60fps_hevc.mp4"
+          },
+          {
+            "uri": "https://storage.googleapis.com/exoplayer-test-media-1/mp4/bbb_760x480_1mbps_60fps_hevc_pad.mp4"
+          }
+        ]
       }
     ]
   },
@@ -639,6 +650,12 @@
         "uri": "https://storage.googleapis.com/wvmedia/2019/cenc/av1/24/webm/llama_av1_480p_400.webm",
         "drm_scheme": "widevine",
         "drm_license_uri": "https://proxy.uat.widevine.com/proxy?video_id=GTS_HW_SECURE_ALL&provider=widevine_test"
+      },
+      {
+        "name": "HD (DASH, Widevine cenc, L3, SVT-AV1)",
+        "uri": "https://storage.googleapis.com/exoplayer-test-media-1/widevine/av1/dash_manifest.mpd",
+        "drm_scheme": "widevine",
+        "drm_license_uri": "https://proxy.uat.widevine.com/proxy?provider=widevine_test"
       }
     ]
   },

@@ -238,6 +238,7 @@ public interface ExoPlayer extends Player {
     @C.VideoChangeFrameRateStrategy /* package */ int videoChangeFrameRateStrategy;
     /* package */ boolean useLazyPreparation;
     /* package */ SeekParameters seekParameters;
+    /* package */ ScrubbingModeParameters scrubbingModeParameters;
     /* package */ long seekBackIncrementMs;
     /* package */ long seekForwardIncrementMs;
     /* package */ long maxSeekToPreviousPositionMs;
@@ -452,6 +453,7 @@ public interface ExoPlayer extends Player {
       seekBackIncrementMs = C.DEFAULT_SEEK_BACK_INCREMENT_MS;
       seekForwardIncrementMs = C.DEFAULT_SEEK_FORWARD_INCREMENT_MS;
       maxSeekToPreviousPositionMs = C.DEFAULT_MAX_SEEK_TO_PREVIOUS_POSITION_MS;
+      scrubbingModeParameters = ScrubbingModeParameters.DEFAULT;
       livePlaybackSpeedControl = new DefaultLivePlaybackSpeedControl.Builder().build();
       clock = Clock.DEFAULT;
       releaseTimeoutMs = DEFAULT_RELEASE_TIMEOUT_MS;
@@ -853,7 +855,6 @@ public interface ExoPlayer extends Player {
      * @throws IllegalStateException If {@link #build()} has already been called.
      */
     @CanIgnoreReturnValue
-    @UnstableApi
     public Builder setSeekBackIncrementMs(@IntRange(from = 1) long seekBackIncrementMs) {
       checkArgument(seekBackIncrementMs > 0);
       checkState(!buildCalled);
@@ -870,7 +871,6 @@ public interface ExoPlayer extends Player {
      * @throws IllegalStateException If {@link #build()} has already been called.
      */
     @CanIgnoreReturnValue
-    @UnstableApi
     public Builder setSeekForwardIncrementMs(@IntRange(from = 1) long seekForwardIncrementMs) {
       checkArgument(seekForwardIncrementMs > 0);
       checkState(!buildCalled);
@@ -894,6 +894,22 @@ public interface ExoPlayer extends Player {
       checkArgument(maxSeekToPreviousPositionMs >= 0L);
       checkState(!buildCalled);
       this.maxSeekToPreviousPositionMs = maxSeekToPreviousPositionMs;
+      return this;
+    }
+
+    /**
+     * Sets the parameters that control the behavior in {@linkplain #setScrubbingModeEnabled
+     * scrubbing mode}.
+     *
+     * @param scrubbingModeParameters The {@link ScrubbingModeParameters}.
+     * @return This builder.
+     * @throws IllegalStateException If {@link #build()} has already been called.
+     */
+    @CanIgnoreReturnValue
+    @UnstableApi
+    public Builder setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters) {
+      checkState(!buildCalled);
+      this.scrubbingModeParameters = checkNotNull(scrubbingModeParameters);
       return this;
     }
 
@@ -1039,12 +1055,13 @@ public interface ExoPlayer extends Player {
      *
      * @param playbackLooper A {@link Looper}.
      * @return This builder.
-     * @throws IllegalStateException If {@link #build()} has already been called.
+     * @throws IllegalStateException If {@link #build()} has already been called, or when the
+     *     {@linkplain Looper#getMainLooper() main looper} is passed in.
      */
     @CanIgnoreReturnValue
     @UnstableApi
     public Builder setPlaybackLooper(Looper playbackLooper) {
-      checkState(!buildCalled);
+      checkState(!buildCalled && playbackLooper != Looper.getMainLooper());
       this.playbackLooperProvider = new PlaybackLooperProvider(playbackLooper);
       return this;
     }
@@ -1365,6 +1382,15 @@ public interface ExoPlayer extends Player {
   void setShuffleOrder(ShuffleOrder shuffleOrder);
 
   /**
+   * Returns the shuffle order.
+   *
+   * <p>The {@link ShuffleOrder} returned will have the same length as the current playlist ({@link
+   * Player#getMediaItemCount()}).
+   */
+  @UnstableApi
+  ShuffleOrder getShuffleOrder();
+
+  /**
    * Sets the {@linkplain PreloadConfiguration preload configuration} to configure playlist
    * preloading.
    *
@@ -1453,6 +1479,42 @@ public interface ExoPlayer extends Player {
   boolean getSkipSilenceEnabled();
 
   /**
+   * Sets whether to optimize the player for scrubbing (many frequent seeks).
+   *
+   * <p>The player may consume more resources in this mode, so it should only be used for short
+   * periods of time in response to user interaction (e.g. dragging on a progress bar UI element).
+   *
+   * <p>During scrubbing mode playback is {@linkplain Player#getPlaybackSuppressionReason()
+   * suppressed} with {@link Player#PLAYBACK_SUPPRESSION_REASON_SCRUBBING}.
+   *
+   * @param scrubbingModeEnabled Whether scrubbing mode should be enabled.
+   */
+  @UnstableApi
+  void setScrubbingModeEnabled(boolean scrubbingModeEnabled);
+
+  /**
+   * Returns whether the player is optimized for scrubbing (many frequent seeks).
+   *
+   * <p>See {@link #setScrubbingModeEnabled(boolean)}.
+   */
+  @UnstableApi
+  boolean isScrubbingModeEnabled();
+
+  /**
+   * Sets the parameters that control behavior in {@linkplain #setScrubbingModeEnabled scrubbing
+   * mode}.
+   */
+  @UnstableApi
+  void setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters);
+
+  /**
+   * Gets the parameters that control behavior in {@linkplain #setScrubbingModeEnabled scrubbing
+   * mode}.
+   */
+  @UnstableApi
+  ScrubbingModeParameters getScrubbingModeParameters();
+
+  /**
    * Sets a {@link List} of {@linkplain Effect video effects} that will be applied to each video
    * frame.
    *
@@ -1461,6 +1523,10 @@ public interface ExoPlayer extends Player {
    * message} to the {@linkplain Renderer video renderer} with type {@link
    * Renderer#MSG_SET_VIDEO_OUTPUT_RESOLUTION} after calling this method. For {@link SurfaceView},
    * {@link TextureView} and {@link SurfaceHolder} output this happens automatically.
+   *
+   * <p>Pass {@link androidx.media3.common.VideoFrameProcessor#REDRAW} to force the effect pipeline
+   * to redraw the effects immediately. To accurately interleave redraws, listen to {@link
+   * VideoFrameMetadataListener#onVideoFrameAboutToBeRendered} events.
    *
    * <p>The following limitations exist for using {@linkplain Effect video effects}:
    *

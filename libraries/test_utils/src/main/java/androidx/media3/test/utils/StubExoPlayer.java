@@ -31,6 +31,7 @@ import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.PlayerMessage;
 import androidx.media3.exoplayer.Renderer;
+import androidx.media3.exoplayer.ScrubbingModeParameters;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.analytics.AnalyticsCollector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
@@ -176,6 +177,11 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
   }
 
   @Override
+  public ShuffleOrder getShuffleOrder() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void setAudioAttributes(AudioAttributes audioAttributes, boolean handleAudioFocus) {
     throw new UnsupportedOperationException();
   }
@@ -212,6 +218,26 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
 
   @Override
   public boolean getSkipSilenceEnabled() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setScrubbingModeEnabled(boolean scrubbingModeEnabled) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public boolean isScrubbingModeEnabled() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public ScrubbingModeParameters getScrubbingModeParameters() {
     throw new UnsupportedOperationException();
   }
 

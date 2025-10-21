@@ -15,10 +15,12 @@
  */
 package androidx.media3.session;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Assertions.checkArgument;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.postOrRun;
+import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.app.Activity;
 import android.app.ForegroundServiceStartNotAllowedException;
@@ -32,9 +34,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.RemoteException;
 import androidx.annotation.CallSuper;
 import androidx.annotation.GuardedBy;
+import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.collection.ArrayMap;
@@ -46,6 +48,10 @@ import androidx.media3.common.util.Util;
 import androidx.media3.session.MediaSession.ControllerInfo;
 import androidx.media3.session.legacy.MediaBrowserServiceCompat;
 import androidx.media3.session.legacy.MediaSessionManager;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -165,23 +171,51 @@ public abstract class MediaSessionService extends Service {
    */
   @UnstableApi public static final long DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS = 600_000;
 
+  /**
+   * The behavior for showing notifications when the {@link Player} is in {@link Player#STATE_IDLE}.
+   *
+   * <p>One of {@link #SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS}, {@link
+   * #SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER}, {@link
+   * #SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR}.
+   *
+   * <p>The default value is {@link #SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR}.
+   */
+  @UnstableApi
+  @Documented
+  @Retention(RetentionPolicy.SOURCE)
+  @Target(TYPE_USE)
+  @IntDef({
+    SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS,
+    SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER,
+    SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR
+  })
+  public @interface ShowNotificationForIdlePlayerMode {}
+
+  /**
+   * Always show a notification when the {@link Player} is in {@link Player#STATE_IDLE}, has media,
+   * and the notification wasn't explicitly dismissed.
+   */
+  @UnstableApi public static final int SHOW_NOTIFICATION_FOR_IDLE_PLAYER_ALWAYS = 1;
+
+  /** Never show a notification when the {@link Player} is in {@link Player#STATE_IDLE}. */
+  @UnstableApi public static final int SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER = 2;
+
+  /**
+   * Shows a notification when the {@link Player} is in {@link Player#STATE_IDLE} due to {@link
+   * Player#stop} or an error, has media, and the notification wasn't explicitly dismissed.
+   */
+  @UnstableApi public static final int SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR = 3;
+
   private static final String TAG = "MSessionService";
 
   private final Object lock;
   private final Handler mainHandler;
+  @Nullable private MediaSessionServiceStub stub;
+  private @MonotonicNonNull MediaNotificationManager mediaNotificationManager;
+  private @MonotonicNonNull DefaultActionFactory actionFactory;
 
   @GuardedBy("lock")
   private final Map<String, MediaSession> sessions;
-
-  @GuardedBy("lock")
-  @Nullable
-  private MediaSessionServiceStub stub;
-
-  @GuardedBy("lock")
-  private @MonotonicNonNull MediaNotificationManager mediaNotificationManager;
-
-  @GuardedBy("lock")
-  private @MonotonicNonNull DefaultActionFactory actionFactory;
 
   @GuardedBy("lock")
   @Nullable
@@ -208,9 +242,7 @@ public abstract class MediaSessionService extends Service {
   @Override
   public void onCreate() {
     super.onCreate();
-    synchronized (lock) {
-      stub = new MediaSessionServiceStub(this);
-    }
+    stub = new MediaSessionServiceStub(this);
   }
 
   /**
@@ -274,11 +306,10 @@ public abstract class MediaSessionService extends Service {
     if (old == null) {
       // Session has returned for the first time. Register callbacks.
       // TODO(b/191644474): Check whether the session is registered to multiple services.
-      MediaNotificationManager notificationManager = getMediaNotificationManager();
       postOrRun(
           mainHandler,
           () -> {
-            notificationManager.addSession(session);
+            getMediaNotificationManager().addSession(session);
             session.setListener(new MediaSessionListener());
           });
     }
@@ -300,11 +331,10 @@ public abstract class MediaSessionService extends Service {
       checkArgument(sessions.containsKey(session.getId()), "session not found");
       sessions.remove(session.getId());
     }
-    MediaNotificationManager notificationManager = getMediaNotificationManager();
     postOrRun(
         mainHandler,
         () -> {
-          notificationManager.removeSession(session);
+          getMediaNotificationManager().removeSession(session);
           session.clearListener();
         });
   }
@@ -486,6 +516,8 @@ public abstract class MediaSessionService extends Service {
    * <p>The default and maximum value is {@link #DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS}. If a larger
    * value is provided, it will be clamped down to {@link #DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS}.
    *
+   * <p>This method must be called on the main thread.
+   *
    * @param foregroundServiceTimeoutMs The timeout in milliseconds.
    */
   @UnstableApi
@@ -499,6 +531,19 @@ public abstract class MediaSessionService extends Service {
   }
 
   /**
+   * Sets whether and when a notification for a {@link Player} in {@link Player#STATE_IDLE} should
+   * be shown.
+   *
+   * @param showNotificationForIdlePlayerMode The {@link ShowNotificationForIdlePlayerMode}.
+   */
+  @UnstableApi
+  public final void setShowNotificationForIdlePlayer(
+      @ShowNotificationForIdlePlayerMode int showNotificationForIdlePlayerMode) {
+    getMediaNotificationManager()
+        .setShowNotificationForIdlePlayer(showNotificationForIdlePlayerMode);
+  }
+
+  /**
    * Returns whether there is a session with ongoing user-engaged playback that is run in a
    * foreground service.
    *
@@ -509,6 +554,8 @@ public abstract class MediaSessionService extends Service {
    * {@linkplain #setForegroundServiceTimeoutMs foreground service timeout} after they paused,
    * stopped, failed or ended. Use {@link #pauseAllPlayersAndStopSelf()} to pause all ongoing
    * playbacks immediately and terminate the service.
+   *
+   * <p>This method must be called on the main thread.
    */
   @UnstableApi
   public boolean isPlaybackOngoing() {
@@ -521,6 +568,8 @@ public abstract class MediaSessionService extends Service {
    *
    * <p>This terminates the service lifecycle and triggers {@link #onDestroy()} that an app can
    * override to release the sessions and other resources.
+   *
+   * <p>This method must be called on the main thread.
    */
   @UnstableApi
   public void pauseAllPlayersAndStopSelf() {
@@ -580,11 +629,9 @@ public abstract class MediaSessionService extends Service {
   @Override
   public void onDestroy() {
     super.onDestroy();
-    synchronized (lock) {
-      if (stub != null) {
-        stub.release();
-        stub = null;
-      }
+    if (stub != null) {
+      stub.release();
+      stub = null;
     }
   }
 
@@ -640,16 +687,16 @@ public abstract class MediaSessionService extends Service {
   protected final void setMediaNotificationProvider(
       MediaNotification.Provider mediaNotificationProvider) {
     checkNotNull(mediaNotificationProvider);
-    synchronized (lock) {
-      getMediaNotificationManager(/* initialMediaNotificationProvider= */ mediaNotificationProvider)
-          .setMediaNotificationProvider(mediaNotificationProvider);
-    }
+    Util.postOrRun(
+        mainHandler,
+        () ->
+            getMediaNotificationManager(
+                    /* initialMediaNotificationProvider= */ mediaNotificationProvider)
+                .setMediaNotificationProvider(mediaNotificationProvider));
   }
 
   /* package */ IBinder getServiceBinder() {
-    synchronized (lock) {
-      return checkStateNotNull(stub).asBinder();
-    }
+    return checkStateNotNull(stub).asBinder();
   }
 
   /**
@@ -664,7 +711,7 @@ public abstract class MediaSessionService extends Service {
           getMediaNotificationManager().shouldRunInForeground(startInForegroundWhenPaused);
       onUpdateNotification(session, startInForegroundRequired);
     } catch (/* ForegroundServiceStartNotAllowedException */ IllegalStateException e) {
-      if ((Util.SDK_INT >= 31) && Api31.instanceOfForegroundServiceStartNotAllowedException(e)) {
+      if ((SDK_INT >= 31) && Api31.instanceOfForegroundServiceStartNotAllowedException(e)) {
         Log.e(TAG, "Failed to start foreground", e);
         onForegroundServiceStartNotAllowedException();
         return false;
@@ -680,30 +727,26 @@ public abstract class MediaSessionService extends Service {
 
   private MediaNotificationManager getMediaNotificationManager(
       @Nullable MediaNotification.Provider initialMediaNotificationProvider) {
-    synchronized (lock) {
-      if (mediaNotificationManager == null) {
-        if (initialMediaNotificationProvider == null) {
-          checkStateNotNull(getBaseContext(), "Accessing service context before onCreate()");
-          initialMediaNotificationProvider =
-              new DefaultMediaNotificationProvider.Builder(getApplicationContext()).build();
-        }
-        mediaNotificationManager =
-            new MediaNotificationManager(
-                /* mediaSessionService= */ this,
-                initialMediaNotificationProvider,
-                getActionFactory());
+    if (mediaNotificationManager == null) {
+      if (initialMediaNotificationProvider == null) {
+        checkStateNotNull(getBaseContext(), "Accessing service context before onCreate()");
+        initialMediaNotificationProvider =
+            new DefaultMediaNotificationProvider.Builder(getApplicationContext()).build();
       }
-      return mediaNotificationManager;
+      mediaNotificationManager =
+          new MediaNotificationManager(
+              /* mediaSessionService= */ this,
+              initialMediaNotificationProvider,
+              getActionFactory());
     }
+    return mediaNotificationManager;
   }
 
   private DefaultActionFactory getActionFactory() {
-    synchronized (lock) {
-      if (actionFactory == null) {
-        actionFactory = new DefaultActionFactory(/* service= */ this);
-      }
-      return actionFactory;
+    if (actionFactory == null) {
+      actionFactory = new DefaultActionFactory(/* service= */ this);
     }
+    return actionFactory;
   }
 
   @Nullable
@@ -744,7 +787,7 @@ public abstract class MediaSessionService extends Service {
 
     @Override
     public boolean onPlayRequested(MediaSession session) {
-      if (Util.SDK_INT < 31 || Util.SDK_INT >= 33) {
+      if (SDK_INT < 31 || SDK_INT >= 33) {
         return true;
       }
       // Check if service can start foreground successfully on Android 12 and 12L.
@@ -759,14 +802,12 @@ public abstract class MediaSessionService extends Service {
 
     private final WeakReference<MediaSessionService> serviceReference;
     private final Handler handler;
-    private final MediaSessionManager mediaSessionManager;
     private final Set<IMediaController> pendingControllers;
 
     public MediaSessionServiceStub(MediaSessionService serviceReference) {
       this.serviceReference = new WeakReference<>(serviceReference);
       Context context = serviceReference.getApplicationContext();
       handler = new Handler(context.getMainLooper());
-      mediaSessionManager = MediaSessionManager.getSessionManager(context);
       // ConcurrentHashMap has a bug in APIs 21-22 that can result in lost updates.
       pendingControllers = Collections.synchronizedSet(new HashSet<>());
     }
@@ -776,7 +817,7 @@ public abstract class MediaSessionService extends Service {
         @Nullable IMediaController caller, @Nullable Bundle connectionRequestBundle) {
       if (caller == null || connectionRequestBundle == null) {
         // Malformed call from potentially malicious controller.
-        // No need to notify that we're ignoring call.
+        SessionUtil.disconnectIMediaController(caller);
         return;
       }
       ConnectionRequest request;
@@ -784,17 +825,13 @@ public abstract class MediaSessionService extends Service {
         request = ConnectionRequest.fromBundle(connectionRequestBundle);
       } catch (RuntimeException e) {
         // Malformed call from potentially malicious controller.
-        // No need to notify that we're ignoring call.
         Log.w(TAG, "Ignoring malformed Bundle for ConnectionRequest", e);
+        SessionUtil.disconnectIMediaController(caller);
         return;
       }
-      if (serviceReference.get() == null) {
-        try {
-          caller.onDisconnected(/* seq= */ 0);
-        } catch (RemoteException e) {
-          // Controller may be died prematurely.
-          // Not an issue because we'll ignore it anyway.
-        }
+      @Nullable MediaSessionService mediaSessionService = serviceReference.get();
+      if (mediaSessionService == null) {
+        SessionUtil.disconnectIMediaController(caller);
         return;
       }
       int callingPid = Binder.getCallingPid();
@@ -803,13 +840,15 @@ public abstract class MediaSessionService extends Service {
       int pid = (callingPid != 0) ? callingPid : request.pid;
       MediaSessionManager.RemoteUserInfo remoteUserInfo =
           new MediaSessionManager.RemoteUserInfo(request.packageName, pid, uid);
-      boolean isTrusted = mediaSessionManager.isTrustedForMediaControl(remoteUserInfo);
+      boolean isTrusted =
+          MediaSessionManager.getSessionManager(mediaSessionService.getApplicationContext())
+              .isTrustedForMediaControl(remoteUserInfo);
       pendingControllers.add(caller);
       try {
         handler.post(
             () -> {
               pendingControllers.remove(caller);
-              boolean shouldNotifyDisconnected = true;
+              boolean connected = false;
               try {
                 @Nullable MediaSessionService service = serviceReference.get();
                 if (service == null) {
@@ -826,30 +865,19 @@ public abstract class MediaSessionService extends Service {
                         request.connectionHints,
                         request.maxCommandsForMediaItems);
 
-                @Nullable MediaSession session;
-                try {
-                  session = service.onGetSession(controllerInfo);
-                  if (session == null) {
-                    return;
-                  }
-
-                  service.addSession(session);
-                  shouldNotifyDisconnected = false;
-
-                  session.handleControllerConnectionFromService(caller, controllerInfo);
-                } catch (Exception e) {
-                  // Don't propagate exception in service to the controller.
-                  Log.w(TAG, "Failed to add a session to session service", e);
+                @Nullable MediaSession session = service.onGetSession(controllerInfo);
+                if (session == null) {
+                  return;
                 }
+                service.addSession(session);
+                session.handleControllerConnectionFromService(caller, controllerInfo);
+                connected = true;
+              } catch (Exception e) {
+                // Don't propagate exception in service to the controller.
+                Log.w(TAG, "Failed to add a session to session service", e);
               } finally {
-                // Trick to call onDisconnected() in one place.
-                if (shouldNotifyDisconnected) {
-                  try {
-                    caller.onDisconnected(/* seq= */ 0);
-                  } catch (RemoteException e) {
-                    // Controller may be died prematurely.
-                    // Not an issue because we'll ignore it anyway.
-                  }
+                if (!connected) {
+                  SessionUtil.disconnectIMediaController(caller);
                 }
               }
             });
@@ -862,12 +890,9 @@ public abstract class MediaSessionService extends Service {
       serviceReference.clear();
       handler.removeCallbacksAndMessages(null);
       for (IMediaController controller : pendingControllers) {
-        try {
-          controller.onDisconnected(/* seq= */ 0);
-        } catch (RemoteException e) {
-          // Ignore. We're releasing.
-        }
+        SessionUtil.disconnectIMediaController(controller);
       }
+      pendingControllers.clear();
     }
   }
 

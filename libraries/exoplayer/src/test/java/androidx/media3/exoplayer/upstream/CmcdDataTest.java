@@ -29,6 +29,7 @@ import androidx.media3.datasource.DataSpec;
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -476,5 +477,158 @@ public class CmcdDataTest {
             new CmcdData.Factory(cmcdConfiguration, CmcdData.STREAMING_FORMAT_DASH)
                 .setObjectType(CmcdData.OBJECT_TYPE_MANIFEST)
                 .createCmcdData());
+  }
+
+  @Test
+  public void createInstance_noKeysAllowed_setsCorrectHttpHeaders() {
+    CmcdConfiguration.Factory cmcdConfigurationFactory =
+        mediaItem ->
+            new CmcdConfiguration(
+                "sessionId",
+                mediaItem.mediaId,
+                new CmcdConfiguration.RequestConfig() {
+                  @Override
+                  public boolean isKeyAllowed(@CmcdConfiguration.CmcdKey String key) {
+                    return false;
+                  }
+                });
+    MediaItem mediaItem = new MediaItem.Builder().setMediaId("mediaId").build();
+    CmcdConfiguration cmcdConfiguration =
+        cmcdConfigurationFactory.createCmcdConfiguration(mediaItem);
+    ExoTrackSelection trackSelection = mock(ExoTrackSelection.class);
+    Format format =
+        new Format.Builder().setPeakBitrate(840_000).setSampleMimeType(MimeTypes.AUDIO_AC4).build();
+    when(trackSelection.getSelectedFormat()).thenReturn(format);
+    when(trackSelection.getTrackGroup())
+        .thenReturn(new TrackGroup(format, new Format.Builder().setPeakBitrate(1_000_000).build()));
+    when(trackSelection.getLatestBitrateEstimate()).thenReturn(500_000L);
+    DataSpec dataSpec = new DataSpec.Builder().setUri(Uri.EMPTY).build();
+    CmcdData cmcdData =
+        new CmcdData.Factory(cmcdConfiguration, CmcdData.STREAMING_FORMAT_DASH)
+            .setTrackSelection(trackSelection)
+            .setBufferedDurationUs(1_760_000)
+            .setPlaybackRate(2.0f)
+            .setChunkDurationUs(3_000_000)
+            .createCmcdData();
+
+    dataSpec = cmcdData.addToDataSpec(dataSpec);
+
+    assertThat(dataSpec.httpRequestHeaders).isEmpty();
+  }
+
+  @Test
+  public void createInstance_noKeysAllowed_setsCorrectQueryParameters() {
+    CmcdConfiguration.Factory cmcdConfigurationFactory =
+        mediaItem ->
+            new CmcdConfiguration(
+                "sessionId",
+                mediaItem.mediaId,
+                new CmcdConfiguration.RequestConfig() {
+                  @Override
+                  public boolean isKeyAllowed(@CmcdConfiguration.CmcdKey String key) {
+                    return false;
+                  }
+                },
+                CmcdConfiguration.MODE_QUERY_PARAMETER);
+    MediaItem mediaItem = new MediaItem.Builder().setMediaId("mediaId").build();
+    CmcdConfiguration cmcdConfiguration =
+        cmcdConfigurationFactory.createCmcdConfiguration(mediaItem);
+    ExoTrackSelection trackSelection = mock(ExoTrackSelection.class);
+    Format format =
+        new Format.Builder().setPeakBitrate(840_000).setSampleMimeType(MimeTypes.AUDIO_AC4).build();
+    when(trackSelection.getSelectedFormat()).thenReturn(format);
+    when(trackSelection.getTrackGroup())
+        .thenReturn(new TrackGroup(format, new Format.Builder().setPeakBitrate(1_000_000).build()));
+    when(trackSelection.getLatestBitrateEstimate()).thenReturn(500_000L);
+    DataSpec dataSpec = new DataSpec.Builder().setUri(Uri.EMPTY).build();
+    CmcdData cmcdData =
+        new CmcdData.Factory(cmcdConfiguration, CmcdData.STREAMING_FORMAT_DASH)
+            .setTrackSelection(trackSelection)
+            .setBufferedDurationUs(1_760_000)
+            .setPlaybackRate(2.0f)
+            .setChunkDurationUs(3_000_000)
+            .createCmcdData();
+
+    dataSpec = cmcdData.addToDataSpec(dataSpec);
+
+    assertThat(dataSpec.uri.getQueryParameter(CmcdConfiguration.CMCD_QUERY_PARAMETER_KEY))
+        .isEmpty();
+  }
+
+  @Test
+  public void removeFromDataSpec_noCmcdData_returnsUnmodifiedDataSpec() {
+    DataSpec dataSpec =
+        new DataSpec.Builder()
+            .setUri("https://test.test/test.mp4?key=value&cMcD=test&key2=value2")
+            .setHttpRequestHeaders(ImmutableMap.of("headerKey1", "headerValue1"))
+            .build();
+
+    DataSpec updatedDataSpec = CmcdData.removeFromDataSpec(dataSpec);
+
+    assertThat(updatedDataSpec).isEqualTo(dataSpec);
+  }
+
+  @Test
+  public void removeFromDataSpec_cmcdDataQueryParameter_removesQueryParameter() {
+    DataSpec dataSpec =
+        new DataSpec.Builder()
+            .setUri(
+                "https://test.test/test.mp4?key=value&CMCD=bl%3D1800%2Cbr%3D840%2Cbs&key2=value2")
+            .setHttpRequestHeaders(ImmutableMap.of("headerKey1", "headerValue1"))
+            .build();
+
+    DataSpec updatedDataSpec = CmcdData.removeFromDataSpec(dataSpec);
+
+    assertThat(updatedDataSpec.uri.toString())
+        .isEqualTo("https://test.test/test.mp4?key=value&key2=value2");
+    assertThat(updatedDataSpec.httpRequestHeaders).containsExactly("headerKey1", "headerValue1");
+  }
+
+  @Test
+  public void removeFromDataSpec_cmcdHttpHeaders_removesHttpHeaders() {
+    DataSpec dataSpec =
+        new DataSpec.Builder()
+            .setUri("https://test.test/test.mp4")
+            .setHttpRequestHeaders(
+                ImmutableMap.of(
+                    "headerKey1",
+                    "headerValue1",
+                    "CMCD-Object",
+                    "br=840",
+                    "CMCD-Request",
+                    "bl=500",
+                    "CMCD-Session",
+                    "cid=\"mediaId\"",
+                    "CMCD-Status",
+                    "bs",
+                    "headerKey2",
+                    "headerValue2"))
+            .build();
+
+    DataSpec updatedDataSpec = CmcdData.removeFromDataSpec(dataSpec);
+
+    assertThat(updatedDataSpec.uri.toString()).isEqualTo("https://test.test/test.mp4");
+    assertThat(updatedDataSpec.httpRequestHeaders)
+        .containsExactly("headerKey1", "headerValue1", "headerKey2", "headerValue2");
+  }
+
+  @Test
+  public void removeFromUri_noCmcdData_returnsUnmodifiedUri() {
+    Uri uri = Uri.parse("https://test.test/test.mp4?key=value&cMcD=test&key2=value2");
+
+    Uri updatedUri = CmcdData.removeFromUri(uri);
+
+    assertThat(updatedUri).isEqualTo(uri);
+  }
+
+  @Test
+  public void removeFromUri_cmcdDataQueryParameter_removesQueryParameter() {
+    Uri uri =
+        Uri.parse(
+            "https://test.test/test.mp4?key=value&CMCD=bl%3D1800%2Cbr%3D840%2Cbs&key2=value2");
+
+    Uri updatedUri = CmcdData.removeFromUri(uri);
+
+    assertThat(updatedUri.toString()).isEqualTo("https://test.test/test.mp4?key=value&key2=value2");
   }
 }
