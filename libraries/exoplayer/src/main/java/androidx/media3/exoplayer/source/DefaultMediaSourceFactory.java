@@ -213,7 +213,7 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
     liveMaxOffsetMs = C.TIME_UNSET;
     liveMinSpeed = C.RATE_UNSET;
     liveMaxSpeed = C.RATE_UNSET;
-    parseSubtitlesDuringExtraction = true;
+    parseSubtitlesDuringExtraction = false;
   }
 
   @CanIgnoreReturnValue
@@ -722,7 +722,7 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       this.subtitleParserFactory = subtitleParserFactory;
       mediaSourceFactorySuppliers = new HashMap<>();
       mediaSourceFactories = new HashMap<>();
-      parseSubtitlesDuringExtraction = true;
+      parseSubtitlesDuringExtraction = false;
       codecsToParseWithinGopSampleDependencies = C.VIDEO_CODEC_FLAG_H264 | C.VIDEO_CODEC_FLAG_H265;
     }
 
