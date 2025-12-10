@@ -81,7 +81,7 @@ public final class DefaultHlsExtractorFactory implements HlsExtractorFactory {
    * true)}
    */
   public DefaultHlsExtractorFactory() {
-    this(/* payloadReaderFactoryFlags= */ 0, /* exposeCea608WhenMissingDeclarations */ true);
+    this(/* payloadReaderFactoryFlags= */ 0, /* exposeCea608WhenMissingDeclarations */ false);
     codecsToParseWithinGopSampleDependencies = C.VIDEO_CODEC_FLAG_H264 | C.VIDEO_CODEC_FLAG_H265;
   }
 
