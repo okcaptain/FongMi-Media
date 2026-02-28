@@ -257,7 +257,8 @@ public final class PsExtractor implements Extractor {
         if (elementaryStreamReader != null) {
           TrackIdGenerator idGenerator = new TrackIdGenerator(streamId, MAX_STREAM_ID_PLUS_ONE);
           elementaryStreamReader.createTracks(output, idGenerator);
-          payloadReader = new PesReader(elementaryStreamReader, timestampAdjuster);
+          boolean skipDvdHeader = (streamId == PRIVATE_STREAM_1);
+          payloadReader = new PesReader(elementaryStreamReader, timestampAdjuster, skipDvdHeader);
           psPayloadReaders.put(streamId, payloadReader);
         }
       }
@@ -315,10 +316,13 @@ public final class PsExtractor implements Extractor {
   private static final class PesReader {
 
     private static final int PES_SCRATCH_SIZE = 64;
+    private static final int DVD_AC3_SUBSTREAM_ID_MIN = 0x80;
+    private static final int DVD_AC3_SUBSTREAM_ID_MAX = 0x87;
 
     private final ElementaryStreamReader pesPayloadReader;
     private final TimestampAdjuster timestampAdjuster;
     private final ParsableBitArray pesScratch;
+    private final boolean skipDvdHeader;
 
     private boolean ptsFlag;
     private boolean dtsFlag;
@@ -326,9 +330,10 @@ public final class PsExtractor implements Extractor {
     private int extendedHeaderLength;
     private long timeUs;
 
-    public PesReader(ElementaryStreamReader pesPayloadReader, TimestampAdjuster timestampAdjuster) {
+    public PesReader(ElementaryStreamReader pesPayloadReader, TimestampAdjuster timestampAdjuster, boolean skipDvdHeader) {
       this.pesPayloadReader = pesPayloadReader;
       this.timestampAdjuster = timestampAdjuster;
+      this.skipDvdHeader = skipDvdHeader;
       pesScratch = new ParsableBitArray(new byte[PES_SCRATCH_SIZE]);
     }
 
@@ -357,10 +362,28 @@ public final class PsExtractor implements Extractor {
       data.readBytes(pesScratch.data, 0, extendedHeaderLength);
       pesScratch.setPosition(0);
       parseHeaderExtension();
+      if (skipDvdHeader && !skipDvdSubstreamHeader(data)) {
+        return;
+      }
+
       pesPayloadReader.packetStarted(timeUs, TsPayloadReader.FLAG_DATA_ALIGNMENT_INDICATOR);
       pesPayloadReader.consume(data);
       // We always have complete PES packets with program stream.
       pesPayloadReader.packetFinished(/* isEndOfInput= */ false);
+    }
+
+    /**
+     * Skips the 4-byte DVD substream header in Private Stream 1 if present.
+     *
+     * @return {@code true} to continue processing; {@code false} to discard the packet.
+     */
+    private boolean skipDvdSubstreamHeader(ParsableByteArray data) {
+      if (data.bytesLeft() < 4) {
+        return false;
+      }
+      int subStreamId = data.readUnsignedByte();
+      data.skipBytes(3); // num_of_frames + first_access_unit_ptr
+      return subStreamId >= DVD_AC3_SUBSTREAM_ID_MIN && subStreamId <= DVD_AC3_SUBSTREAM_ID_MAX;
     }
 
     private void parseHeader() {
