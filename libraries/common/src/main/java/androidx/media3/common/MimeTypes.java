@@ -121,6 +121,7 @@ public final class MimeTypes {
   public static final String AUDIO_COOK = BASE_TYPE_AUDIO + "/cook";
   public static final String AUDIO_RALF = BASE_TYPE_AUDIO + "/x-ralf";
   public static final String AUDIO_SIPR = BASE_TYPE_AUDIO + "/x-sipr";
+  public static final String AUDIO_AV3A = BASE_TYPE_AUDIO + "/av3a";
   @UnstableApi public static final String AUDIO_IAMF = BASE_TYPE_AUDIO + "/iamf";
 
   @UnstableApi

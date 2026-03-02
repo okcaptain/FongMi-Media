@@ -266,6 +266,8 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "WMA Lossless";
       case MimeTypes.AUDIO_WMA_VOICE:
         return "WMA Voice";
+      case MimeTypes.AUDIO_AV3A:
+        return "AV3A";
       case MimeTypes.VIDEO_MP4:
         return "MP4";
       case MimeTypes.VIDEO_FLV:
