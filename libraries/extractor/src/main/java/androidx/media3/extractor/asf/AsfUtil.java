@@ -1,0 +1,193 @@
+package androidx.media3.extractor.asf;
+
+import androidx.annotation.Nullable;
+import androidx.media3.common.Format;
+import androidx.media3.common.MimeTypes;
+import android.util.Log;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Shared constants and helpers for the ASF extractor package.
+ */
+final class AsfUtil {
+
+  private static final String TAG = AsfUtil.class.getSimpleName();
+
+  static final byte[] VC1_START_CODE = {0x00, 0x00, 0x01, 0x0F};
+
+  static final int FOURCC_WMV1 = makeFourcc('W', 'M', 'V', '1');
+  static final int FOURCC_WMV2 = makeFourcc('W', 'M', 'V', '2');
+  static final int FOURCC_WMV3 = makeFourcc('W', 'M', 'V', '3');
+  static final int FOURCC_WMVA = makeFourcc('W', 'M', 'V', 'A');
+  static final int FOURCC_WVC1 = makeFourcc('W', 'V', 'C', '1');
+
+  static final int WAVE_FORMAT_WMA1 = 0x0160;
+  static final int WAVE_FORMAT_WMA2 = 0x0161;
+  static final int WAVE_FORMAT_WMA_PRO = 0x0162;
+  static final int WAVE_FORMAT_WMA_LOSS = 0x0163;
+  static final int WAVE_FORMAT_WMA_VOICE = 0x000A;
+
+  static int makeFourcc(char charA, char charB, char charC, char charD) {
+    return charA | (charB << 8) | (charC << 16) | (charD << 24);
+  }
+
+  static String fourccToString(int fourcc) {
+    return new String(new byte[]{
+        (byte) fourcc,
+        (byte) (fourcc >> 8),
+        (byte) (fourcc >> 16),
+        (byte) (fourcc >> 24)
+    });
+  }
+
+  private static boolean isVc1Fourcc(int fourcc) {
+    return fourcc == FOURCC_WVC1 || fourcc == FOURCC_WMVA;
+  }
+
+  static boolean isSupportedVideoFourcc(int fourcc) {
+    return fourcc == FOURCC_WMV1
+        || fourcc == FOURCC_WMV2
+        || fourcc == FOURCC_WMV3
+        || fourcc == FOURCC_WMVA
+        || fourcc == FOURCC_WVC1;
+  }
+
+  static boolean isSupportedWmaTag(int tag) {
+    return tag == WAVE_FORMAT_WMA1
+        || tag == WAVE_FORMAT_WMA2
+        || tag == WAVE_FORMAT_WMA_PRO
+        || tag == WAVE_FORMAT_WMA_LOSS
+        || tag == WAVE_FORMAT_WMA_VOICE;
+  }
+
+  private static String fourccToMimeType(int fourcc) {
+    if (fourcc == FOURCC_WMV1) {
+      return MimeTypes.VIDEO_WMV1;
+    }
+    if (fourcc == FOURCC_WMV2) {
+      return MimeTypes.VIDEO_WMV2;
+    }
+    if (fourcc == FOURCC_WVC1 || fourcc == FOURCC_WMVA) {
+      return MimeTypes.VIDEO_VC1;
+    }
+    return MimeTypes.VIDEO_WMV;
+  }
+
+  private static String wmaTagToMimeType(int tag) {
+    switch (tag) {
+      case WAVE_FORMAT_WMA1:
+        return MimeTypes.AUDIO_WMA1;
+      case WAVE_FORMAT_WMA_PRO:
+        return MimeTypes.AUDIO_WMA_PRO;
+      case WAVE_FORMAT_WMA_LOSS:
+        return MimeTypes.AUDIO_WMA_LOSSLESS;
+      case WAVE_FORMAT_WMA_VOICE:
+        return MimeTypes.AUDIO_WMA_VOICE;
+      default:
+        return MimeTypes.AUDIO_WMA2;
+    }
+  }
+
+  /**
+   * Prepends the VC-1 sequence-header start code ({@code 00 00 01 0F}) if not already present.
+   * Returns {@link #VC1_START_CODE} alone when {@code data} is null or empty.
+   */
+  static byte[] prependVc1StartCode(@Nullable byte[] data) {
+    if (data == null || data.length == 0) {
+      return VC1_START_CODE;
+    }
+    if (data.length >= 4 && data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x0F) {
+      return data;
+    }
+    byte[] out = new byte[VC1_START_CODE.length + data.length];
+    System.arraycopy(VC1_START_CODE, 0, out, 0, VC1_START_CODE.length);
+    System.arraycopy(data, 0, out, VC1_START_CODE.length, data.length);
+    return out;
+  }
+
+  /**
+   * Derives WMA frame length in samples using the same lookup as FFmpeg's
+   * ff_wma_get_frame_len_bits() in libavcodec/wma_common.c.
+   */
+  private static int wmaFrameLen(int sampleRate, int version) {
+    if (sampleRate <= 16000) {
+      return 1 << 9;
+    } else if (sampleRate <= 22050 || (sampleRate <= 32000 && version == 1)) {
+      return 1 << 10;
+    } else if (sampleRate <= 48000 || version < 3) {
+      return 1 << 11;
+    } else if (sampleRate <= 96000) {
+      return 1 << 12;
+    } else {
+      return 1 << 13;
+    }
+  }
+
+  /**
+   * Returns nBlockAlign for the stream, deriving it from avgBytesPerSec when the file omits it
+   * (nBlockAlign == 0). Derivation uses the same frame-length formula as FFmpeg's
+   * ff_wma_get_frame_len_bits() in libavcodec/wma_common.c.
+   */
+  private static int resolveBlockAlign(AudioStreamInfo audioInfo) {
+    if (audioInfo.blockAlign != 0) {
+      return audioInfo.blockAlign;
+    }
+    int avgBytesPerSec = audioInfo.avgBitrateBps / 8;
+    int version = (audioInfo.waveFormatTag == WAVE_FORMAT_WMA1) ? 1 : 2;
+    int frameLen = wmaFrameLen(audioInfo.sampleRate, version);
+    return (avgBytesPerSec * frameLen + audioInfo.sampleRate - 1) / audioInfo.sampleRate;
+  }
+
+  /**
+   * Builds the WMA decoder initialization data list:
+   * index 0 = codec-private bytes (may be empty), index 1 = nBlockAlign as 4-byte BE.
+   */
+  private static List<byte[]> buildWmaInitData(@Nullable byte[] codecExtra, int blockAlign) {
+    List<byte[]> list = new ArrayList<>();
+    list.add(codecExtra != null && codecExtra.length > 0 ? codecExtra : new byte[0]);
+    list.add(new byte[]{(byte) (blockAlign >> 24), (byte) (blockAlign >> 16), (byte) (blockAlign >> 8), (byte) blockAlign});
+    return list;
+  }
+
+  static Format buildAudioFormat(AudioStreamInfo audioInfo) {
+    Format.Builder builder = new Format.Builder()
+        .setId(String.valueOf(audioInfo.streamNumber))
+        .setSampleMimeType(wmaTagToMimeType(audioInfo.waveFormatTag))
+        .setChannelCount(audioInfo.channelCount)
+        .setSampleRate(audioInfo.sampleRate)
+        .setAverageBitrate(audioInfo.avgBitrateBps);
+    int blockAlign = resolveBlockAlign(audioInfo);
+    if (blockAlign > 0) {
+      builder.setMaxInputSize(blockAlign);
+    } else {
+      Log.w(TAG, "Stream #" + audioInfo.streamNumber + ": blockAlign is 0 (VBR or missing nBlockAlign " + "and nAvgBytesPerSec); WMA decoder will fail without block_align");
+    }
+    builder.setInitializationData(buildWmaInitData(audioInfo.codecExtra, blockAlign));
+    return builder.build();
+  }
+
+  /**
+   * @param pixelWidthHeightRatio SAR; pass {@code 1f} when no SAR extension is present.
+   */
+  static Format buildVideoFormat(VideoStreamInfo videoInfo, float pixelWidthHeightRatio) {
+    Format.Builder builder = new Format.Builder()
+        .setId(String.valueOf(videoInfo.streamNumber))
+        .setSampleMimeType(fourccToMimeType(videoInfo.fourcc))
+        .setWidth(videoInfo.width)
+        .setHeight(videoInfo.height)
+        .setPixelWidthHeightRatio(pixelWidthHeightRatio);
+    if (videoInfo.frameRate != Format.NO_VALUE) {
+      builder.setFrameRate(videoInfo.frameRate);
+    }
+    if (videoInfo.averageBitrate != Format.NO_VALUE) {
+      builder.setAverageBitrate(videoInfo.averageBitrate);
+    }
+    if (videoInfo.codecPrivate != null && videoInfo.codecPrivate.length > 0) {
+      byte[] csd = isVc1Fourcc(videoInfo.fourcc) ? prependVc1StartCode(videoInfo.codecPrivate) : videoInfo.codecPrivate;
+      builder.setInitializationData(Collections.singletonList(csd));
+    }
+    return builder.build();
+  }
+}
