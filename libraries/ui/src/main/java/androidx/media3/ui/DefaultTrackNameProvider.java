@@ -246,6 +246,16 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "MIDI";
       case MimeTypes.AUDIO_IAMF:
         return "IAMF";
+      case MimeTypes.AUDIO_COOK:
+        return "COOK";
+      case MimeTypes.AUDIO_ATRAC3:
+        return "ATRAC3";
+      case MimeTypes.AUDIO_ATRAC3P:
+        return "ATRAC3+";
+      case MimeTypes.AUDIO_SIPR:
+        return "SIPR";
+      case MimeTypes.AUDIO_RALF:
+        return "RALF";
       case MimeTypes.AUDIO_WMA1:
         return "WMA1";
       case MimeTypes.AUDIO_WMA2:
@@ -290,6 +300,14 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "DIVX";
       case MimeTypes.VIDEO_DOLBY_VISION:
         return "DOLBY";
+      case MimeTypes.VIDEO_RV10:
+        return "RV10";
+      case MimeTypes.VIDEO_RV20:
+        return "RV20";
+      case MimeTypes.VIDEO_RV30:
+        return "RV30";
+      case MimeTypes.VIDEO_RV40:
+        return "RV40";
       case MimeTypes.TEXT_SSA:
         return "SSA";
       case MimeTypes.TEXT_VTT:
