@@ -2679,6 +2679,7 @@ public final class Util {
    */
   public static @ContentType int inferContentType(Uri uri) {
     @Nullable String scheme = uri.getScheme();
+    String url = uri.toString();
     if (scheme != null
         && (Ascii.equalsIgnoreCase("rtsp", scheme) || Ascii.equalsIgnoreCase("rtspt", scheme))) {
       return C.CONTENT_TYPE_RTSP;
@@ -2689,15 +2690,6 @@ public final class Util {
         return C.CONTENT_TYPE_DASH;
       } else {
         return C.CONTENT_TYPE_HLS;
-      }
-    }
-
-    if ("proxy".equals(scheme)) {
-      String url = uri.toString();
-      if (url.contains("m3u8")) {
-        return C.CONTENT_TYPE_HLS;
-      } else if (url.contains("mpd")) {
-        return C.CONTENT_TYPE_DASH;
       }
     }
 
@@ -2731,11 +2723,9 @@ public final class Util {
       return C.CONTENT_TYPE_SS;
     }
 
-    if (uri.getPath() != null && uri.getPath().contains("m3u8") || uri.getQuery() != null && uri.getQuery().contains("m3u8")) {
+    if (url.contains("=m3u8")) {
       return C.CONTENT_TYPE_HLS;
-    }
-
-    if (uri.getQueryParameter("type") != null && uri.getQueryParameter("type").contains("mpd")) {
+    } else if (url.contains("=mpd")) {
       return C.CONTENT_TYPE_DASH;
     }
 
