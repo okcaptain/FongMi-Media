@@ -16,14 +16,6 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 
 public final class PgsReader implements ElementaryStreamReader {
 
-  private static final int SIGNATURE_WORD = 0x5047;
-  private static final int SIGNATURE_BYTE_1 = SIGNATURE_WORD >> 8 & 0xff;
-  private static final int SIGNATURE_BYTE_2 = SIGNATURE_WORD & 0xff;
-  private static final int SIGNATURE_LENGTH = 2;
-
-  private static final int SECTION_NULL = -1;
-  private static final int SECTION_PTS_DTS = 0;
-  private static final int SECTION_PTS_DTS_SIZE = 8;
   private static final int SECTION_TYPE_PALETTE = 0x14;
   private static final int SECTION_TYPE_BITMAP_PICTURE = 0x15;
   private static final int SECTION_TYPE_IDENTIFIER = 0x16;
@@ -43,15 +35,14 @@ public final class PgsReader implements ElementaryStreamReader {
   private int sectionType;
   private int sectionBytesToRead;
   private int firstByteOfSectionSize;
-  private int sigBytesToCheck;
   private int sampleBytesWritten;
   private long sampleTimeUs;
   private boolean packageGoodToGo;
 
   public PgsReader(@Nullable String language) {
     stateOfReading = STATE_EXPECT_NEXT;
-    sectionType = SECTION_NULL;
-    sectionBytesToRead = -1;
+    sectionType = -1;
+    sectionBytesToRead = 0;
     this.language = language;
     sampleBytesWritten = 0;
     sampleTimeUs = C.TIME_UNSET;
@@ -62,8 +53,8 @@ public final class PgsReader implements ElementaryStreamReader {
     packageGoodToGo = false;
     sampleTimeUs = C.TIME_UNSET;
     stateOfReading = STATE_EXPECT_NEXT;
-    sectionType = SECTION_NULL;
-    sectionBytesToRead = -1;
+    sectionType = -1;
+    sectionBytesToRead = 0;
     sampleBytesWritten = 0;
   }
 
@@ -89,7 +80,6 @@ public final class PgsReader implements ElementaryStreamReader {
     if (sampleTimeUs == C.TIME_UNSET) {
       sampleTimeUs = pesTimeUs;
     }
-    sigBytesToCheck = SIGNATURE_LENGTH;
   }
 
   @Override
@@ -111,56 +101,12 @@ public final class PgsReader implements ElementaryStreamReader {
     if (!packageGoodToGo) {
       return;
     }
-    if (!detectSignature(data)) {
-      return;
-    }
+    int dataPosition = data.getPosition();
     goThrough(data);
+    data.setPosition(dataPosition);
     int bytesAvailable = data.bytesLeft();
     output.sampleData(data, bytesAvailable);
     sampleBytesWritten += bytesAvailable;
-  }
-
-  /**
-   * Auto-detects whether the stream has a PGS signature ("PG") and consumes it if present.
-   * Returns false if more data is needed or the signature is invalid.
-   */
-  private boolean detectSignature(ParsableByteArray data) {
-    if (sigBytesToCheck == 0) {
-      return true;
-    }
-    if (data.bytesLeft() == 0) {
-      return false;
-    }
-    if (sigBytesToCheck == SIGNATURE_LENGTH) {
-      int firstByte = data.getData()[data.getPosition()] & 0xff;
-      if (firstByte != SIGNATURE_BYTE_1) {
-        sigBytesToCheck = 0;
-        return true;
-      }
-      if (isNextByteInvalid(data, SIGNATURE_BYTE_1)) {
-        return false;
-      }
-    }
-    if (sigBytesToCheck == SIGNATURE_LENGTH - 1) {
-      if (isNextByteInvalid(data, SIGNATURE_BYTE_2)) {
-        return false;
-      }
-      stateOfReading = STATE_SECTION_BYTES_COUNTDOWN;
-      sectionType = SECTION_PTS_DTS;
-      sectionBytesToRead = SECTION_PTS_DTS_SIZE;
-    }
-    return true;
-  }
-
-  private boolean isNextByteInvalid(ParsableByteArray data, int expectedValue) {
-    if (data.bytesLeft() == 0) {
-      return true;
-    }
-    if (data.readUnsignedByte() != expectedValue) {
-      packageGoodToGo = false;
-    }
-    sigBytesToCheck--;
-    return !packageGoodToGo;
   }
 
   private void goThrough(ParsableByteArray array) {
@@ -172,16 +118,16 @@ public final class PgsReader implements ElementaryStreamReader {
       switch (stateOfReading) {
         case STATE_EXPECT_NEXT:
           if (b == SECTION_TYPE_IDENTIFIER || b == SECTION_TYPE_WINDOW_DEF || b == SECTION_TYPE_PALETTE || b == SECTION_TYPE_BITMAP_PICTURE || b == SECTION_TYPE_END) {
-            sectionType = b & 0xff;
+            sectionType = b;
             stateOfReading = STATE_SECTION_TYPE_READ;
           }
           break;
         case STATE_SECTION_TYPE_READ:
-          firstByteOfSectionSize = b & 0xff;
+          firstByteOfSectionSize = b;
           stateOfReading = STATE_SECTION_SIZE_FIRST_BYTE_READ;
           break;
         case STATE_SECTION_SIZE_FIRST_BYTE_READ:
-          sectionBytesToRead = (firstByteOfSectionSize & 0xff) << 8 | (b & 0xff);
+          sectionBytesToRead = firstByteOfSectionSize << 8 | b;
           stateOfReading = sectionBytesToRead == 0 ? STATE_EXPECT_NEXT : STATE_SECTION_BYTES_COUNTDOWN;
           break;
         case STATE_SECTION_BYTES_COUNTDOWN:
