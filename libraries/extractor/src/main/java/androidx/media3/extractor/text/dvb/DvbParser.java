@@ -193,27 +193,19 @@ public final class DvbParser implements SubtitleParser {
       RegionComposition regionComposition = subtitleService.regions.get(regionId);
 
       // Clip drawing to the current region and display definition window.
-      int baseHorizontalAddress =
-          pageRegion.horizontalAddress + displayDefinition.horizontalPositionMinimum;
-      int baseVerticalAddress =
-          pageRegion.verticalAddress + displayDefinition.verticalPositionMinimum;
-      int clipRight =
-          min(
-              baseHorizontalAddress + regionComposition.width,
-              displayDefinition.horizontalPositionMaximum);
-      int clipBottom =
-          min(
-              baseVerticalAddress + regionComposition.height,
-              displayDefinition.verticalPositionMaximum);
-      int bitmapClipRight = min(clipRight, bitmap.getWidth());
-      int bitmapClipBottom = min(clipBottom, bitmap.getHeight());
-      int clampedWidth = bitmapClipRight - baseHorizontalAddress;
-      int clampedHeight = bitmapClipBottom - baseVerticalAddress;
+      int baseHorizontalAddress = pageRegion.horizontalAddress + displayDefinition.horizontalPositionMinimum;
+      int baseVerticalAddress = pageRegion.verticalAddress + displayDefinition.verticalPositionMinimum;
+      int clipRight = min(baseHorizontalAddress + regionComposition.width, displayDefinition.horizontalPositionMaximum);
+      int clipBottom = min(baseVerticalAddress + regionComposition.height, displayDefinition.verticalPositionMaximum);
+      clipRight = min(clipRight, bitmap.getWidth());
+      clipBottom = min(clipBottom, bitmap.getHeight());
+      int clampedWidth = clipRight - baseHorizontalAddress;
+      int clampedHeight = clipBottom - baseVerticalAddress;
       if (clampedWidth <= 0 || clampedHeight <= 0) {
         canvas.restore();
         continue;
       }
-      canvas.clipRect(baseHorizontalAddress, baseVerticalAddress, bitmapClipRight, bitmapClipBottom);
+      canvas.clipRect(baseHorizontalAddress, baseVerticalAddress, clipRight, clipBottom);
       ClutDefinition clutDefinition = subtitleService.cluts.get(regionComposition.clutId);
       if (clutDefinition == null) {
         clutDefinition = subtitleService.ancillaryCluts.get(regionComposition.clutId);
