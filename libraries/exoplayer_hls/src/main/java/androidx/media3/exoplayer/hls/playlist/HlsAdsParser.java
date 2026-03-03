@@ -21,18 +21,19 @@ public final class HlsAdsParser {
   private static final String TAG_ENDLIST = "#EXT-X-ENDLIST";
   private static final String TAG_DISCONTINUITY = "#EXT-X-DISCONTINUITY";
   private static final String DEFAULT_GROUP_IDENTIFIER = "NO_PATH";
-  private static final String SEGMENT_EXTENSION = ".ts";
   private static final Pattern REGEX_DURATION = Pattern.compile(TAG_DURATION + ":([\\d\\.]+)\\b");
 
   private static final int REASONABLE_GROUP_LIMIT = 10;
   private static final int MIN_PREFIX_LENGTH_TO_TEST = 5;
   private static final int SEQUENCE_NUMBER_RESERVED_LENGTH = 4;
-  private static final double MIN_MAJORITY_GROUP_RATIO = 0.85;
 
   private static final int AD_BREAK_THRESHOLD_SHORT = 2;
   private static final int AD_BREAK_THRESHOLD_MEDIUM = 3;
   private static final int AD_BREAK_THRESHOLD_LONG = 4;
   private static final int AD_BREAK_THRESHOLD_EXTRA = 5;
+
+  private static final double MIN_MAJORITY_GROUP_RATIO = 0.85;
+  private static final double AD_BLOCK_SIZE_RATIO = 0.75;
   private static final double DURATION_TIER_SHORT = 30.0;
   private static final double DURATION_TIER_MEDIUM = 60.0;
   private static final double DURATION_TIER_LONG = 90.0;
@@ -86,9 +87,10 @@ public final class HlsAdsParser {
     }
     int minorityBlockCount = 0;
     Set<String> adSegments = new HashSet<>();
+    double adSizeThreshold = modeSize * AD_BLOCK_SIZE_RATIO;
     for (int i = 0; i < blocks.size() - 1; i++) {
       List<String> block = blocks.get(i);
-      if (block.size() < modeSize) {
+      if (block.size() < adSizeThreshold) {
         minorityBlockCount++;
         adSegments.addAll(block);
       }
@@ -97,10 +99,10 @@ public final class HlsAdsParser {
     int minorityCountThreshold = getMinorityCountThreshold(totalDurationMinutes);
     Log.d(TAG, "Total duration is " + String.format(Locale.getDefault(), "%.2f", totalDurationMinutes) + " minutes. Ad block threshold is " + minorityCountThreshold + ".");
     if (minorityBlockCount > 0 && minorityBlockCount <= minorityCountThreshold) {
-      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority block(s) strictly smaller than mode size " + modeSize + " (excluding last block). Identified as ads.");
+      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " ad block(s) with size < " + adSizeThreshold + " (mode=" + modeSize + ", excluding last block). Identified as ads.");
       return adSegments;
     } else {
-      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority blocks. Count exceeds threshold of " + minorityCountThreshold + " (or is 0). Result is ambiguous, ignoring.");
+      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " ad blocks. Count exceeds threshold of " + minorityCountThreshold + " (or is 0). Result is ambiguous, ignoring.");
       return Collections.emptySet();
     }
   }
@@ -289,7 +291,7 @@ public final class HlsAdsParser {
   }
 
   private static boolean isSegmentLine(String trimmedLine) {
-    return !trimmedLine.startsWith("#") && trimmedLine.endsWith(SEGMENT_EXTENSION);
+    return !trimmedLine.isEmpty() && !trimmedLine.startsWith("#");
   }
 
   private static String rebuildM3u8(String[] lines, Set<String> adSegments) {
