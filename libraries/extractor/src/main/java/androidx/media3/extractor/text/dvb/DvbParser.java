@@ -205,7 +205,15 @@ public final class DvbParser implements SubtitleParser {
           min(
               baseVerticalAddress + regionComposition.height,
               displayDefinition.verticalPositionMaximum);
-      canvas.clipRect(baseHorizontalAddress, baseVerticalAddress, clipRight, clipBottom);
+      int bitmapClipRight = min(clipRight, bitmap.getWidth());
+      int bitmapClipBottom = min(clipBottom, bitmap.getHeight());
+      int clampedWidth = bitmapClipRight - baseHorizontalAddress;
+      int clampedHeight = bitmapClipBottom - baseVerticalAddress;
+      if (clampedWidth <= 0 || clampedHeight <= 0) {
+        canvas.restore();
+        continue;
+      }
+      canvas.clipRect(baseHorizontalAddress, baseVerticalAddress, bitmapClipRight, bitmapClipBottom);
       ClutDefinition clutDefinition = subtitleService.cluts.get(regionComposition.clutId);
       if (clutDefinition == null) {
         clutDefinition = subtitleService.ancillaryCluts.get(regionComposition.clutId);
@@ -248,8 +256,8 @@ public final class DvbParser implements SubtitleParser {
         canvas.drawRect(
             baseHorizontalAddress,
             baseVerticalAddress,
-            baseHorizontalAddress + regionComposition.width,
-            baseVerticalAddress + regionComposition.height,
+            baseHorizontalAddress + clampedWidth,
+            baseVerticalAddress + clampedHeight,
             fillRegionPaint);
       }
 
@@ -260,15 +268,15 @@ public final class DvbParser implements SubtitleParser {
                       bitmap,
                       baseHorizontalAddress,
                       baseVerticalAddress,
-                      regionComposition.width,
-                      regionComposition.height))
+                      clampedWidth,
+                      clampedHeight))
               .setPosition((float) baseHorizontalAddress / displayDefinition.width)
               .setPositionAnchor(Cue.ANCHOR_TYPE_START)
               .setLine(
                   (float) baseVerticalAddress / displayDefinition.height, Cue.LINE_TYPE_FRACTION)
               .setLineAnchor(Cue.ANCHOR_TYPE_START)
-              .setSize((float) regionComposition.width / displayDefinition.width)
-              .setBitmapHeight((float) regionComposition.height / displayDefinition.height)
+              .setSize((float) clampedWidth / displayDefinition.width)
+              .setBitmapHeight((float) clampedHeight / displayDefinition.height)
               .build());
 
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
