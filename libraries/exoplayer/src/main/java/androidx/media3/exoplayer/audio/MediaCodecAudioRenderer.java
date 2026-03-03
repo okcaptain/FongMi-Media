@@ -1036,6 +1036,14 @@ public class MediaCodecAudioRenderer extends MediaCodecRenderer implements Media
         return Format.NO_VALUE;
       }
     }
+    if (MimeTypes.AUDIO_DTS_HD.equals(format.sampleMimeType) || MimeTypes.AUDIO_DTS_EXPRESS.equals(format.sampleMimeType)) {
+      // DTS-HD and DTS Express frames can exceed the default codec input buffer size allocated by
+      // the hardware decoder. Provide a minimum size based on the maximum DTS-HD bitrate to ensure
+      // the codec allocates a large enough native buffer from the start.
+      // 32 KB covers typical DTS-HD MA / DTS-HD HR frames (max ~18 Mbps @ 512 samples / 32 kHz).
+      int minDtsHdInputSize = 32 * 1024;
+      return format.maxInputSize == Format.NO_VALUE ? minDtsHdInputSize : max(format.maxInputSize, minDtsHdInputSize);
+    }
     return format.maxInputSize;
   }
 

@@ -178,6 +178,7 @@ public class MatroskaExtractor implements Extractor {
   private static final String CODEC_ID_PGS = "S_HDMV/PGS";
   private static final String CODEC_ID_DVBSUB = "S_DVBSUB";
 
+  private static final int DTS_HD_MAX_INPUT_SIZE = 32 * 1024;
   private static final int VORBIS_MAX_INPUT_SIZE = 8192;
   private static final int OPUS_MAX_INPUT_SIZE = 5760;
   private static final int ENCRYPTION_IV_SIZE = 8;
@@ -2397,6 +2398,7 @@ public class MatroskaExtractor implements Extractor {
           break;
         case CODEC_ID_DTS_LOSSLESS:
           mimeType = MimeTypes.AUDIO_DTS_HD;
+          maxInputSize = DTS_HD_MAX_INPUT_SIZE;
           break;
         case CODEC_ID_FLAC:
           mimeType = MimeTypes.AUDIO_FLAC;
