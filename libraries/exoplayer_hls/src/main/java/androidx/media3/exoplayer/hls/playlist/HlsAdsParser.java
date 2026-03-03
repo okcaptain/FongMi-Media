@@ -2,9 +2,8 @@ package androidx.media3.exoplayer.hls.playlist;
 
 import android.text.TextUtils;
 import androidx.media3.common.util.Log;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -22,6 +21,7 @@ public final class HlsAdsParser {
   private static final String TAG_ENDLIST = "#EXT-X-ENDLIST";
   private static final String TAG_DISCONTINUITY = "#EXT-X-DISCONTINUITY";
   private static final String DEFAULT_GROUP_IDENTIFIER = "NO_PATH";
+  private static final String SEGMENT_EXTENSION = ".ts";
   private static final Pattern REGEX_DURATION = Pattern.compile(TAG_DURATION + ":([\\d\\.]+)\\b");
 
   private static final int REASONABLE_GROUP_LIMIT = 10;
@@ -29,28 +29,31 @@ public final class HlsAdsParser {
   private static final int SEQUENCE_NUMBER_RESERVED_LENGTH = 4;
   private static final double MIN_MAJORITY_GROUP_RATIO = 0.85;
 
+  private static final int AD_BREAK_THRESHOLD_SHORT = 2;
+  private static final int AD_BREAK_THRESHOLD_MEDIUM = 3;
+  private static final int AD_BREAK_THRESHOLD_LONG = 4;
+  private static final int AD_BREAK_THRESHOLD_EXTRA = 5;
+  private static final double DURATION_TIER_SHORT = 30.0;
+  private static final double DURATION_TIER_MEDIUM = 60.0;
+  private static final double DURATION_TIER_LONG = 90.0;
+
   public static String process(String m3u8) {
     if (TextUtils.isEmpty(m3u8) || !m3u8.contains(TAG_ENDLIST)) {
       return m3u8;
     }
     Log.d(TAG, "Executing HlsAdsParser...");
-    long startTime = System.currentTimeMillis();
     String[] lines = m3u8.split("\\r?\\n");
     Set<String> adSegments = findAds(lines);
     if (adSegments.isEmpty()) {
       Log.d(TAG, "No ad segments detected. Returning original content.");
-      long endTime = System.currentTimeMillis();
-      Log.d(TAG, "Total processing time: " + (endTime - startTime) + "ms");
       return m3u8;
+    } else {
+      Log.d(TAG, "Detected " + adSegments.size() + " ad segments to remove. Rebuilding playlist...");
+      for (String adSegment : adSegments) {
+        Log.d(TAG, "  -> Removing: " + adSegment);
+      }
+      return rebuildM3u8(lines, adSegments);
     }
-    Log.d(TAG, "Detected " + adSegments.size() + " ad segments to remove. Rebuilding playlist...");
-    for (String adSegment : adSegments) {
-      Log.d(TAG, "  -> Removing: " + adSegment);
-    }
-    String result = rebuildM3u8(lines, adSegments);
-    long endTime = System.currentTimeMillis();
-    Log.d(TAG, "Total processing time: " + (endTime - startTime) + "ms");
-    return result;
   }
 
   private static Set<String> findAds(String[] lines) {
@@ -58,7 +61,7 @@ public final class HlsAdsParser {
     List<String> allSegments = new ArrayList<>();
     for (String line : lines) {
       String trimmedLine = line.trim();
-      if (!trimmedLine.startsWith("#") && trimmedLine.endsWith(".ts")) {
+      if (isSegmentLine(trimmedLine)) {
         allSegments.add(trimmedLine);
       }
     }
@@ -75,21 +78,17 @@ public final class HlsAdsParser {
     List<List<String>> blocks = getDiscontinuityBlocks(lines);
     if (blocks.size() < 2) {
       Log.d(TAG, "Discontinuity Analysis: Only " + blocks.size() + " block(s) found. Strategy inconclusive.");
-      return new HashSet<>();
+      return Collections.emptySet();
     }
-    int minSize = Integer.MAX_VALUE;
-    for (List<String> block : blocks) {
-      if (block.size() < minSize) {
-        minSize = block.size();
-      }
-    }
-    if (minSize == 0) {
-      return new HashSet<>();
+    int modeSize = getModeSize(blocks.subList(0, blocks.size() - 1));
+    if (modeSize <= 0) {
+      return Collections.emptySet();
     }
     int minorityBlockCount = 0;
     Set<String> adSegments = new HashSet<>();
-    for (List<String> block : blocks) {
-      if (block.size() == minSize) {
+    for (int i = 0; i < blocks.size() - 1; i++) {
+      List<String> block = blocks.get(i);
+      if (block.size() < modeSize) {
         minorityBlockCount++;
         adSegments.addAll(block);
       }
@@ -98,40 +97,61 @@ public final class HlsAdsParser {
     int minorityCountThreshold = getMinorityCountThreshold(totalDurationMinutes);
     Log.d(TAG, "Total duration is " + String.format(Locale.getDefault(), "%.2f", totalDurationMinutes) + " minutes. Ad block threshold is " + minorityCountThreshold + ".");
     if (minorityBlockCount > 0 && minorityBlockCount <= minorityCountThreshold) {
-      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority block(s) with size " + minSize + ". This is within the threshold of " + minorityCountThreshold + ".");
+      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority block(s) strictly smaller than mode size " + modeSize + " (excluding last block). Identified as ads.");
       return adSegments;
     } else {
-      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority blocks. Count exceeds threshold of " + minorityCountThreshold + ". Result is ambiguous, ignoring.");
-      return new HashSet<>();
+      Log.d(TAG, "Discontinuity Analysis: Found " + minorityBlockCount + " minority blocks. Count exceeds threshold of " + minorityCountThreshold + " (or is 0). Result is ambiguous, ignoring.");
+      return Collections.emptySet();
     }
   }
 
+  private static int getModeSize(List<List<String>> blocks) {
+    Map<Integer, Integer> sizeFrequencies = new HashMap<>();
+    for (List<String> block : blocks) {
+      int size = block.size();
+      Integer currentFreq = sizeFrequencies.get(size);
+      sizeFrequencies.put(size, currentFreq == null ? 1 : currentFreq + 1);
+    }
+    int modeSize = -1;
+    int maxFreq = -1;
+    for (Map.Entry<Integer, Integer> entry : sizeFrequencies.entrySet()) {
+      int freq = entry.getValue();
+      int size = entry.getKey();
+      if (freq > maxFreq || (freq == maxFreq && size > modeSize)) {
+        maxFreq = freq;
+        modeSize = size;
+      }
+    }
+    return modeSize;
+  }
+
   private static double getTotalDurationInMinutes(String[] lines) {
-    BigDecimal totalSeconds = BigDecimal.ZERO;
+    double totalSeconds = 0.0;
     for (String line : lines) {
       if (line.startsWith(TAG_DURATION)) {
         Matcher matcher = REGEX_DURATION.matcher(line);
         if (matcher.find()) {
           try {
-            totalSeconds = totalSeconds.add(new BigDecimal(matcher.group(1)));
-          } catch (Exception ignored) {
+            totalSeconds += Double.parseDouble(matcher.group(1));
+          } catch (NumberFormatException ignored) {
           }
         }
       }
     }
-    return totalSeconds.divide(new BigDecimal("60"), 2, RoundingMode.HALF_UP).doubleValue();
+    return totalSeconds / 60.0;
   }
 
   private static int getMinorityCountThreshold(double totalMinutes) {
-    if (totalMinutes <= 30) {
-      return 2;
-    } else if (totalMinutes <= 60) {
-      return 3;
-    } else if (totalMinutes <= 90) {
-      return 4;
-    } else {
-      return 5;
+    if (totalMinutes <= DURATION_TIER_SHORT) {
+      return AD_BREAK_THRESHOLD_SHORT;
     }
+    if (totalMinutes <= DURATION_TIER_MEDIUM) {
+      return AD_BREAK_THRESHOLD_MEDIUM;
+    }
+    if (totalMinutes <= DURATION_TIER_LONG) {
+      return AD_BREAK_THRESHOLD_LONG;
+    }
+    return AD_BREAK_THRESHOLD_EXTRA;
   }
 
   private static List<List<String>> getDiscontinuityBlocks(String[] lines) {
@@ -144,7 +164,7 @@ public final class HlsAdsParser {
           blocks.add(currentBlock);
         }
         currentBlock = new ArrayList<>();
-      } else if (!trimmedLine.startsWith("#") && trimmedLine.endsWith(".ts")) {
+      } else if (isSegmentLine(trimmedLine)) {
         currentBlock.add(trimmedLine);
       }
     }
@@ -156,15 +176,17 @@ public final class HlsAdsParser {
 
   private static Set<String> findAdsByFilename(List<String> allSegments) {
     if (allSegments.size() < 2) {
-      return new HashSet<>();
+      return Collections.emptySet();
     }
     Map<String, List<String>> structuralGroups = new HashMap<>();
     for (String segment : allSegments) {
       String identifier = getStructuralIdentifier(segment);
-      if (!structuralGroups.containsKey(identifier)) {
-        structuralGroups.put(identifier, new ArrayList<>());
+      List<String> group = structuralGroups.get(identifier);
+      if (group == null) {
+        group = new ArrayList<>();
+        structuralGroups.put(identifier, group);
       }
-      structuralGroups.get(identifier).add(segment);
+      group.add(segment);
     }
     if (structuralGroups.size() > 1) {
       return findMinorityGroup(structuralGroups);
@@ -178,38 +200,40 @@ public final class HlsAdsParser {
   }
 
   private static Set<String> findMinorityGroup(Map<String, List<String>> groups) {
-    Map.Entry<String, List<String>> minEntry = null;
-    for (Map.Entry<String, List<String>> entry : groups.entrySet()) {
-      if (minEntry == null || entry.getValue().size() < minEntry.getValue().size()) {
-        minEntry = entry;
+    int maxSize = 0;
+    for (List<String> segments : groups.values()) {
+      if (segments.size() > maxSize) {
+        maxSize = segments.size();
       }
     }
-    if (minEntry != null && groups.size() > 1) {
-      return new HashSet<>(minEntry.getValue());
+    Set<String> adSegments = new HashSet<>();
+    for (List<String> segments : groups.values()) {
+      if (segments.size() < maxSize) {
+        adSegments.addAll(segments);
+      }
     }
-    return new HashSet<>();
+    return adSegments;
   }
 
   private static Set<String> findAdsByPrefixAnalysis(List<String> segments) {
     int optimalPrefixLength = findOptimalPrefixLength(segments);
     if (optimalPrefixLength == -1) {
-      return new HashSet<>();
+      return Collections.emptySet();
     }
-    Map<String, Integer> identifierCounts = groupSegmentsByIdentifier(segments, optimalPrefixLength);
-    if (identifierCounts.size() <= 1 || identifierCounts.size() > REASONABLE_GROUP_LIMIT) {
-      return new HashSet<>();
+    Map<String, List<String>> groups = groupSegmentsByIdentifier(segments, optimalPrefixLength);
+    if (groups.size() <= 1 || groups.size() > REASONABLE_GROUP_LIMIT) {
+      return Collections.emptySet();
     }
-    Map.Entry<String, Integer> maxEntry = null;
-    for (Map.Entry<String, Integer> entry : identifierCounts.entrySet()) {
-      if (maxEntry == null || entry.getValue().compareTo(maxEntry.getValue()) > 0) {
-        maxEntry = entry;
+    List<String> mainContent = null;
+    for (List<String> group : groups.values()) {
+      if (mainContent == null || group.size() > mainContent.size()) {
+        mainContent = group;
       }
     }
-    String mainContentIdentifier = (maxEntry != null) ? maxEntry.getKey() : "";
     Set<String> adSegments = new HashSet<>();
-    for (String segment : segments) {
-      if (!getPrefixIdentifier(segment, optimalPrefixLength).equals(mainContentIdentifier)) {
-        adSegments.add(segment);
+    for (Map.Entry<String, List<String>> entry : groups.entrySet()) {
+      if (entry.getValue() != mainContent) {
+        adSegments.addAll(entry.getValue());
       }
     }
     return adSegments;
@@ -228,12 +252,12 @@ public final class HlsAdsParser {
     int bestLength = -1;
     double highestScore = 0.0;
     for (int length = MIN_PREFIX_LENGTH_TO_TEST; length < shortestSegmentLength - SEQUENCE_NUMBER_RESERVED_LENGTH; length++) {
-      Map<String, Integer> groups = groupSegmentsByIdentifier(segments, length);
+      Map<String, List<String>> groups = groupSegmentsByIdentifier(segments, length);
       if (groups.size() > 1 && groups.size() <= REASONABLE_GROUP_LIMIT) {
         int maxGroupSize = 0;
-        for (Integer count : groups.values()) {
-          if (count > maxGroupSize) {
-            maxGroupSize = count;
+        for (List<String> group : groups.values()) {
+          if (group.size() > maxGroupSize) {
+            maxGroupSize = group.size();
           }
         }
         double score = (double) maxGroupSize / segments.size();
@@ -246,40 +270,71 @@ public final class HlsAdsParser {
     return bestLength;
   }
 
-  private static Map<String, Integer> groupSegmentsByIdentifier(List<String> allSegments, int prefixLength) {
-    Map<String, Integer> identifierCounts = new HashMap<>();
+  private static Map<String, List<String>> groupSegmentsByIdentifier(List<String> allSegments, int prefixLength) {
+    Map<String, List<String>> groups = new HashMap<>();
     for (String segment : allSegments) {
       String identifier = getPrefixIdentifier(segment, prefixLength);
-      Integer count = identifierCounts.get(identifier);
-      identifierCounts.put(identifier, (count == null) ? 1 : count + 1);
+      List<String> group = groups.get(identifier);
+      if (group == null) {
+        group = new ArrayList<>();
+        groups.put(identifier, group);
+      }
+      group.add(segment);
     }
-    return identifierCounts;
+    return groups;
   }
 
   private static String getPrefixIdentifier(String segmentUrl, int prefixLength) {
     return segmentUrl.length() > prefixLength ? segmentUrl.substring(0, prefixLength) : segmentUrl;
   }
 
+  private static boolean isSegmentLine(String trimmedLine) {
+    return !trimmedLine.startsWith("#") && trimmedLine.endsWith(SEGMENT_EXTENSION);
+  }
+
   private static String rebuildM3u8(String[] lines, Set<String> adSegments) {
+    List<String> stripped = removeAdSegments(lines, adSegments);
+    List<String> cleaned = removeOrphanedDiscontinuityTags(stripped);
     StringBuilder builder = new StringBuilder();
+    for (String line : cleaned) {
+      builder.append(line).append("\n");
+    }
+    return builder.toString();
+  }
+
+  private static List<String> removeAdSegments(String[] lines, Set<String> adSegments) {
+    List<String> result = new ArrayList<>();
     for (int i = 0; i < lines.length; i++) {
       String line = lines[i].trim();
       if (line.isEmpty()) {
         continue;
       }
       if (line.startsWith(TAG_DURATION)) {
-        if (i + 1 < lines.length) {
-          String nextLine = lines[i + 1].trim();
-          if (adSegments.contains(nextLine)) {
-            i++;
-            continue;
-          }
+        if (i + 1 < lines.length && adSegments.contains(lines[i + 1].trim())) {
+          i++;
+          continue;
         }
       } else if (adSegments.contains(line)) {
         continue;
       }
-      builder.append(line).append("\n");
+      result.add(line);
     }
-    return builder.toString();
+    return result;
+  }
+
+  private static List<String> removeOrphanedDiscontinuityTags(List<String> lines) {
+    List<String> result = new ArrayList<>();
+    for (int i = 0; i < lines.size(); i++) {
+      String line = lines.get(i);
+      if (line.equals(TAG_DISCONTINUITY)) {
+        boolean prevIsDiscontinuityOrBoundary = (i == 0) || lines.get(i - 1).equals(TAG_DISCONTINUITY);
+        boolean nextIsDiscontinuityOrBoundary = (i + 1 >= lines.size()) || lines.get(i + 1).equals(TAG_DISCONTINUITY);
+        if (prevIsDiscontinuityOrBoundary || nextIsDiscontinuityOrBoundary) {
+          continue;
+        }
+      }
+      result.add(line);
+    }
+    return result;
   }
 }
