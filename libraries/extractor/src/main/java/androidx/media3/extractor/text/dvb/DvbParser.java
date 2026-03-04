@@ -193,18 +193,18 @@ public final class DvbParser implements SubtitleParser {
       RegionComposition regionComposition = subtitleService.regions.get(regionId);
 
       // Clip drawing to the current region and display definition window.
-      int baseHorizontalAddress = pageRegion.horizontalAddress + displayDefinition.horizontalPositionMinimum;
-      int baseVerticalAddress = pageRegion.verticalAddress + displayDefinition.verticalPositionMinimum;
-      int clipRight = min(baseHorizontalAddress + regionComposition.width, displayDefinition.horizontalPositionMaximum);
-      int clipBottom = min(baseVerticalAddress + regionComposition.height, displayDefinition.verticalPositionMaximum);
-      clipRight = min(clipRight, bitmap.getWidth());
-      clipBottom = min(clipBottom, bitmap.getHeight());
-      int clampedWidth = clipRight - baseHorizontalAddress;
-      int clampedHeight = clipBottom - baseVerticalAddress;
-      if (clampedWidth <= 0 || clampedHeight <= 0) {
-        canvas.restore();
-        continue;
-      }
+      int baseHorizontalAddress =
+          pageRegion.horizontalAddress + displayDefinition.horizontalPositionMinimum;
+      int baseVerticalAddress =
+          pageRegion.verticalAddress + displayDefinition.verticalPositionMinimum;
+      int clipRight =
+          min(
+              baseHorizontalAddress + regionComposition.width,
+              displayDefinition.horizontalPositionMaximum);
+      int clipBottom =
+          min(
+              baseVerticalAddress + regionComposition.height,
+              displayDefinition.verticalPositionMaximum);
       canvas.clipRect(baseHorizontalAddress, baseVerticalAddress, clipRight, clipBottom);
       ClutDefinition clutDefinition = subtitleService.cluts.get(regionComposition.clutId);
       if (clutDefinition == null) {
@@ -248,8 +248,8 @@ public final class DvbParser implements SubtitleParser {
         canvas.drawRect(
             baseHorizontalAddress,
             baseVerticalAddress,
-            baseHorizontalAddress + clampedWidth,
-            baseVerticalAddress + clampedHeight,
+            baseHorizontalAddress + regionComposition.width,
+            baseVerticalAddress + regionComposition.height,
             fillRegionPaint);
       }
 
@@ -260,15 +260,15 @@ public final class DvbParser implements SubtitleParser {
                       bitmap,
                       baseHorizontalAddress,
                       baseVerticalAddress,
-                      clampedWidth,
-                      clampedHeight))
+                      regionComposition.width,
+                      regionComposition.height))
               .setPosition((float) baseHorizontalAddress / displayDefinition.width)
               .setPositionAnchor(Cue.ANCHOR_TYPE_START)
               .setLine(
                   (float) baseVerticalAddress / displayDefinition.height, Cue.LINE_TYPE_FRACTION)
               .setLineAnchor(Cue.ANCHOR_TYPE_START)
-              .setSize((float) clampedWidth / displayDefinition.width)
-              .setBitmapHeight((float) clampedHeight / displayDefinition.height)
+              .setSize((float) regionComposition.width / displayDefinition.width)
+              .setBitmapHeight((float) regionComposition.height / displayDefinition.height)
               .build());
 
       canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
