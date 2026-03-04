@@ -57,13 +57,7 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
     } else {
       trackName = joinWithSeparator(buildLanguageString(format), buildLabelString(format));
     }
-    if (!trackName.isEmpty()) {
-      return joinWithSeparator(trackName, buildMimeTypeString(format));
-    }
-    @Nullable String language = format.language;
-    return (language == null || language.trim().isEmpty())
-        ? resources.getString(R.string.exo_track_unknown)
-        : resources.getString(R.string.exo_track_unknown_name, language);
+    return joinWithSeparator(trackName, buildMimeTypeString(format));
   }
 
   private String buildResolutionString(Format format) {
@@ -120,6 +114,12 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
     @Nullable String language = format.language;
     if (TextUtils.isEmpty(language) || C.LANGUAGE_UNDETERMINED.equals(language)) {
       return "";
+    }
+    if ("awr".equals(language) || "zh-cmn".equals(language)) {
+      language = "zh";
+    }
+    if ("awq".equals(language) || "qph".equals(language)) {
+      language = "yue";
     }
     if ("chs".equals(language)) {
       language = "zh-Hans";
