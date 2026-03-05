@@ -292,12 +292,6 @@ public class OkHttpDataSource extends BaseDataSource implements HttpDataSource {
         }
       }
 
-      if (responseCode == 403 || responseCode == 404 || responseCode == 500 || responseCode == 503) {
-        connectionEstablished = true;
-        transferStarted(dataSpec);
-        return 0;
-      }
-
       byte[] errorResponseBody;
       try {
         errorResponseBody = ByteStreams.toByteArray(checkNotNull(responseByteStream));
