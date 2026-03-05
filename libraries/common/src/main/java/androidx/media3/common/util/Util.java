@@ -2693,6 +2693,12 @@ public final class Util {
       }
     }
 
+    if (url.contains("=m3u8")) {
+      return C.CONTENT_TYPE_HLS;
+    } else if (url.contains("=mpd")) {
+      return C.CONTENT_TYPE_DASH;
+    }
+
     @Nullable String lastPathSegment = uri.getLastPathSegment();
     if (lastPathSegment == null) {
       return C.CONTENT_TYPE_OTHER;
@@ -2721,12 +2727,6 @@ public final class Util {
         }
       }
       return C.CONTENT_TYPE_SS;
-    }
-
-    if (url.contains("=m3u8")) {
-      return C.CONTENT_TYPE_HLS;
-    } else if (url.contains("=mpd")) {
-      return C.CONTENT_TYPE_DASH;
     }
 
     return C.CONTENT_TYPE_OTHER;
