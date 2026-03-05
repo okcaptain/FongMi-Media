@@ -351,40 +351,22 @@ public final class TsExtractor implements Extractor {
     resetPayloadReaders();
   }
 
-  private void skip(ExtractorInput input) throws IOException {
-    int maxLength = TS_PACKET_SIZE * 5;
-    byte[] buffer = tsPacketBuffer.getData();
-    final int length = Math.min(buffer.length, maxLength + TS_PACKET_SIZE);
-    input.peekFully(buffer, 0, length);
-    for (int i = 0; i < length - TS_PACKET_SIZE; i++) {
-      if (buffer[i] == TS_SYNC_BYTE && buffer[i + TS_PACKET_SIZE] == TS_SYNC_BYTE) {
-        if (i > 0) {
-          input.skipFully(i);
-        }
-        return;
-      }
-    }
-  }
-
   // Extractor implementation.
 
   @Override
   public boolean sniff(ExtractorInput input) throws IOException {
-    skip(input);
     byte[] buffer = tsPacketBuffer.getData();
-    input.peekFully(buffer, 0, TS_PACKET_SIZE * SNIFF_TS_PACKET_COUNT);
-    for (int startPosCandidate = 0; startPosCandidate < TS_PACKET_SIZE; startPosCandidate++) {
-      // Try to identify at least SNIFF_TS_PACKET_COUNT packets starting with TS_SYNC_BYTE.
-      boolean isSyncBytePatternCorrect = true;
-      for (int i = 0; i < SNIFF_TS_PACKET_COUNT; i++) {
-        if (buffer[startPosCandidate + i * TS_PACKET_SIZE] != TS_SYNC_BYTE) {
-          isSyncBytePatternCorrect = false;
+    int peekLength = TS_PACKET_SIZE * SNIFF_TS_PACKET_COUNT;
+    input.peekFully(buffer, 0, peekLength);
+    for (int offset = 0; offset < TS_PACKET_SIZE; offset++) {
+      for (int packetIndex = 0; packetIndex < SNIFF_TS_PACKET_COUNT; packetIndex++) {
+        if (buffer[offset + packetIndex * TS_PACKET_SIZE] != TS_SYNC_BYTE) {
           break;
         }
-      }
-      if (isSyncBytePatternCorrect) {
-        input.skipFully(startPosCandidate);
-        return true;
+        if (packetIndex == SNIFF_TS_PACKET_COUNT - 1) {
+          input.skipFully(offset);
+          return true;
+        }
       }
     }
     return false;
