@@ -22,9 +22,7 @@ final class RaacAudioReader implements TrackReader {
 
   RaacAudioReader(TrackOutput trackOutput, int sampleRate) {
     this.trackOutput = trackOutput;
-    this.frameDurationUs = sampleRate > 0
-        ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate)
-        : 0L;
+    this.frameDurationUs = sampleRate > 0 ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate) : 0L;
   }
 
   @Override

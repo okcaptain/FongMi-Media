@@ -97,9 +97,7 @@ final class CookAudioReader implements TrackReader {
 
   private void emitAccumulatedFrames() {
     int totalFrames = subPacketH * (frameSize / subPacketSize);
-    long frameDurationUs = sampleRate > 0
-        ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate)
-        : 0L;
+    long frameDurationUs = sampleRate > 0 ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate) : 0L;
     for (int i = 0; i < totalFrames; i++) {
       int offset = i * subPacketSize;
       long frameTs = (groupTimestampUs != C.TIME_UNSET) ? groupTimestampUs + (long) i * frameDurationUs : 0L;
