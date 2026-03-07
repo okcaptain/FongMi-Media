@@ -108,35 +108,55 @@ final class AsfUtil {
   }
 
   /**
-   * Derives WMA frame length in samples using the same lookup as FFmpeg's
-   * ff_wma_get_frame_len_bits() in libavcodec/wma_common.c.
+   * See ff_wma_get_frame_len_bits() in libavcodec/wma_common.c.
    */
-  private static int wmaFrameLen(int sampleRate, int version) {
+  private static int wmaFrameLen(int sampleRate, int version, int decodeFlags) {
+    int frameLenBits;
     if (sampleRate <= 16000) {
-      return 1 << 9;
+      frameLenBits = 9;
     } else if (sampleRate <= 22050 || (sampleRate <= 32000 && version == 1)) {
-      return 1 << 10;
+      frameLenBits = 10;
     } else if (sampleRate <= 48000 || version < 3) {
-      return 1 << 11;
+      frameLenBits = 11;
     } else if (sampleRate <= 96000) {
-      return 1 << 12;
+      frameLenBits = 12;
     } else {
-      return 1 << 13;
+      frameLenBits = 13;
     }
+    if (version == 3) {
+      int tmp = decodeFlags & 0x6;
+      if (tmp == 0x2) {
+        frameLenBits++;
+      } else if (tmp == 0x4) {
+        frameLenBits--;
+      } else if (tmp == 0x6) {
+        frameLenBits -= 2;
+      }
+    }
+    return 1 << frameLenBits;
   }
 
   /**
-   * Returns nBlockAlign for the stream, deriving it from avgBytesPerSec when the file omits it
-   * (nBlockAlign == 0). Derivation uses the same frame-length formula as FFmpeg's
-   * ff_wma_get_frame_len_bits() in libavcodec/wma_common.c.
+   * Resolves nBlockAlign, deriving it from avgBytesPerSec when nBlockAlign == 0.
    */
   private static int resolveBlockAlign(AudioStreamInfo audioInfo) {
     if (audioInfo.blockAlign != 0) {
       return audioInfo.blockAlign;
     }
+    int version;
+    int decodeFlags = 0;
+    if (audioInfo.waveFormatTag == WAVE_FORMAT_WMA1) {
+      version = 1;
+    } else if (audioInfo.waveFormatTag == WAVE_FORMAT_WMA_PRO) {
+      version = 3;
+      if (audioInfo.codecExtra != null && audioInfo.codecExtra.length >= 16) {
+        decodeFlags = (audioInfo.codecExtra[14] & 0xFF) | ((audioInfo.codecExtra[15] & 0xFF) << 8);
+      }
+    } else {
+      version = 2;
+    }
     int avgBytesPerSec = audioInfo.avgBitrateBps / 8;
-    int version = (audioInfo.waveFormatTag == WAVE_FORMAT_WMA1) ? 1 : 2;
-    int frameLen = wmaFrameLen(audioInfo.sampleRate, version);
+    int frameLen = wmaFrameLen(audioInfo.sampleRate, version, decodeFlags);
     return (avgBytesPerSec * frameLen + audioInfo.sampleRate - 1) / audioInfo.sampleRate;
   }
 
