@@ -3,23 +3,10 @@ package androidx.media3.extractor.asf;
 import androidx.media3.common.util.ParsableByteArray;
 
 /**
- * Little-endian typed read helpers for {@link ParsableByteArray}.
+ * Little-endian typed read helpers for {@link ParsableByteArray} that are not already
+ * provided by {@link ParsableByteArray} itself.
  */
 final class AsfLittleEndian {
-
-  /**
-   * Reads an unsigned 16-bit LE integer.
-   */
-  static int readU16(ParsableByteArray buf) {
-    return buf.readLittleEndianShort() & 0xFFFF;
-  }
-
-  /**
-   * Reads an unsigned 32-bit LE integer.
-   */
-  static long readU32(ParsableByteArray buf) {
-    return buf.readLittleEndianInt() & 0xFFFFFFFFL;
-  }
 
   /**
    * Reads an unsigned 64-bit LE integer; values overflowing {@code long} clamp to {@link Long#MAX_VALUE}.
@@ -27,20 +14,6 @@ final class AsfLittleEndian {
   static long readU64(ParsableByteArray buf) {
     long value = buf.readLittleEndianLong();
     return value < 0 ? Long.MAX_VALUE : value;
-  }
-
-  /**
-   * Reads a signed 32-bit LE integer.
-   */
-  static int readS32(ParsableByteArray buf) {
-    return buf.readLittleEndianInt();
-  }
-
-  /**
-   * Reads a signed 64-bit LE integer.
-   */
-  static long readS64(ParsableByteArray buf) {
-    return buf.readLittleEndianLong();
   }
 
   /**
@@ -52,9 +25,9 @@ final class AsfLittleEndian {
       case 1:
         return buf.readUnsignedByte();
       case 2:
-        return readU16(buf);
+        return buf.readLittleEndianUnsignedShort();
       case 3:
-        return readU32(buf);
+        return buf.readLittleEndianUnsignedInt();
       default:
         return 0L;
     }

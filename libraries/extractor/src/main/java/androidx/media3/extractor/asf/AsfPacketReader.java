@@ -147,7 +147,7 @@ final class AsfPacketReader {
     AsfLittleEndian.readVarLen(buf, packetLenType);
     AsfLittleEndian.readVarLen(buf, seqType);
     int paddingLen = (int) AsfLittleEndian.readVarLen(buf, paddingType);
-    long sendTimeMs = AsfLittleEndian.readU32(buf);
+    long sendTimeMs = buf.readLittleEndianUnsignedInt();
     buf.skipBytes(2);
     if (multiPayload) {
       decodeMultiPayload(buf, sendTimeMs, paddingLen, repLenType, offsetLenType, objNumLenType);
@@ -213,8 +213,8 @@ final class AsfPacketReader {
       }
       return ReplicatedData.absent();
     }
-    long objSize = AsfLittleEndian.readU32(buf);
-    long presentationMs = AsfLittleEndian.readU32(buf);
+    long objSize = buf.readLittleEndianUnsignedInt();
+    long presentationMs = buf.readLittleEndianUnsignedInt();
     int remaining = repLen - 8;
     boolean tsIsPts = false;
     List<PayloadExtension> exts = payloadExtensions.get(streamNum);
@@ -241,7 +241,7 @@ final class AsfPacketReader {
         if (remaining < 2) {
           break;
         }
-        extSize = AsfLittleEndian.readU16(buf);
+        extSize = buf.readLittleEndianUnsignedShort();
         remaining -= 2;
       }
       if (extSize < 0 || extSize > remaining) {
@@ -259,7 +259,7 @@ final class AsfPacketReader {
         }
       } else if (ext.type == PayloadExtension.TYPE_PTS && extSize >= 24) {
         buf.skipBytes(8);
-        long ts0 = AsfLittleEndian.readS64(buf);
+        long ts0 = buf.readLittleEndianLong();
         tsIsPts = true; // FFmpeg sets ts_is_pts=1 unconditionally
         presentationMs = (ts0 != -1L) ? ts0 / 10_000L : ReplicatedData.ABSENT; // -1 = no valid timestamp
       }

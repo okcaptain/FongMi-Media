@@ -126,7 +126,7 @@ final class AsfHeaderReader {
   private void parseChildObjects(ParsableByteArray buf) {
     while (buf.bytesLeft() >= 24) {
       byte[] objGuid = AsfGuid.read(buf);
-      long objSize = AsfLittleEndian.readS64(buf);
+      long objSize = buf.readLittleEndianLong();
       int bodyLen = (int) (objSize - 24L);
       if (bodyLen < 0 || bodyLen > buf.bytesLeft()) {
         Log.w(TAG, "Corrupt child object size=" + objSize + "; aborting header parse");
@@ -161,11 +161,11 @@ final class AsfHeaderReader {
     buf.skipBytes(8);  // packet_count
     long playDuration100ns = AsfLittleEndian.readU64(buf);
     buf.skipBytes(8);  // send_time
-    prerollMs = AsfLittleEndian.readU32(buf);
+    prerollMs = buf.readLittleEndianUnsignedInt();
     buf.skipBytes(4);  // ignore
-    long flags = AsfLittleEndian.readU32(buf);
+    long flags = buf.readLittleEndianUnsignedInt();
     buf.skipBytes(4);  // min_pktsize
-    packetSize = (int) AsfLittleEndian.readU32(buf); // max_pktsize
+    packetSize = (int) buf.readLittleEndianUnsignedInt(); // max_pktsize
     buf.skipBytes(4);  // max_bitrate
     isBroadcast = (flags & 0x01) != 0;
     long playDurationMs = playDuration100ns / 10_000L;
@@ -180,7 +180,7 @@ final class AsfHeaderReader {
       return;
     }
     buf.skipBytes(18); // reserved GUID (16) + reserved size field (2)
-    long extDataSize = AsfLittleEndian.readU32(buf);
+    long extDataSize = buf.readLittleEndianUnsignedInt();
     int extDataLen = (int) Math.min(extDataSize, bodyLen - 22);
     if (extDataLen > 0) {
       parseChildObjects(new ParsableByteArray(AsfLittleEndian.readBytes(buf, extDataLen)));
@@ -194,9 +194,9 @@ final class AsfHeaderReader {
     byte[] streamType = AsfGuid.read(buf);
     buf.skipBytes(16); // error correction type GUID
     buf.skipBytes(8);  // time offset
-    int typeSpecLen = (int) AsfLittleEndian.readU32(buf);
-    int errCorrLen = (int) AsfLittleEndian.readU32(buf);
-    int streamNumber = AsfLittleEndian.readU16(buf) & 0x7F;
+    int typeSpecLen = (int) buf.readLittleEndianUnsignedInt();
+    int errCorrLen = (int) buf.readLittleEndianUnsignedInt();
+    int streamNumber = buf.readLittleEndianUnsignedShort() & 0x7F;
     buf.skipBytes(4);  // reserved
     int maxDataLen = bodyLen - 54;
     if (typeSpecLen < 0 || errCorrLen < 0 || typeSpecLen > maxDataLen || errCorrLen > maxDataLen - typeSpecLen) {
@@ -219,13 +219,13 @@ final class AsfHeaderReader {
       return;
     }
     buf.skipBytes(16); // start_time (8) + end_time (8)
-    long dataBitrate = AsfLittleEndian.readU32(buf);
+    long dataBitrate = buf.readLittleEndianUnsignedInt();
     buf.skipBytes(28); // bucket_datasize(4) + init_bucket_fullness(4) + alt_leak_datarate(4) + alt_bucket_datasize(4) + alt_init_bucket_fullness(4) + max_object_size(4) + flags(4)
-    int streamNum = AsfLittleEndian.readU16(buf) & 0x7F;
+    int streamNum = buf.readLittleEndianUnsignedShort() & 0x7F;
     buf.skipBytes(2);  // stream_language_id_index
     long avgFrameTime100ns = AsfLittleEndian.readU64(buf);
-    int streamNameCount = AsfLittleEndian.readU16(buf);
-    int payloadExtCount = AsfLittleEndian.readU16(buf);
+    int streamNameCount = buf.readLittleEndianUnsignedShort();
+    int payloadExtCount = buf.readLittleEndianUnsignedShort();
     applyVideoExtProps(streamNum, dataBitrate, avgFrameTime100ns);
     int remaining = bodyLen - 64;
     ParsableByteArray extBody = new ParsableByteArray(AsfLittleEndian.readBytes(buf, Math.min(remaining, buf.bytesLeft())));
@@ -262,7 +262,7 @@ final class AsfHeaderReader {
         return false;
       }
       buf.skipBytes(2); // language_id_index
-      int nameLen = AsfLittleEndian.readU16(buf);
+      int nameLen = buf.readLittleEndianUnsignedShort();
       if (buf.bytesLeft() < nameLen) {
         return false;
       }
@@ -278,8 +278,8 @@ final class AsfHeaderReader {
         break;
       }
       byte[] extGuid = AsfGuid.read(buf);
-      int extSize = AsfLittleEndian.readU16(buf);
-      int extInfoLen = (int) AsfLittleEndian.readU32(buf);
+      int extSize = buf.readLittleEndianUnsignedShort();
+      int extInfoLen = (int) buf.readLittleEndianUnsignedInt();
       if (extInfoLen < 0 || extInfoLen > buf.bytesLeft()) {
         break;
       }
@@ -294,13 +294,13 @@ final class AsfHeaderReader {
       return;
     }
     ParsableByteArray buf = new ParsableByteArray(typeSpec);
-    int wFormatTag = AsfLittleEndian.readU16(buf);
-    int channelCount = AsfLittleEndian.readU16(buf);
-    int sampleRate = (int) AsfLittleEndian.readU32(buf);
-    int avgBytesPerSec = (int) AsfLittleEndian.readU32(buf);
-    int blockAlign = AsfLittleEndian.readU16(buf);
+    int wFormatTag = buf.readLittleEndianUnsignedShort();
+    int channelCount = buf.readLittleEndianUnsignedShort();
+    int sampleRate = (int) buf.readLittleEndianUnsignedInt();
+    int avgBytesPerSec = (int) buf.readLittleEndianUnsignedInt();
+    int blockAlign = buf.readLittleEndianUnsignedShort();
     buf.skipBytes(2); // wBitsPerSample (not used for WMA)
-    int cbSize = buf.bytesLeft() >= 2 ? AsfLittleEndian.readU16(buf) : 0;
+    int cbSize = buf.bytesLeft() >= 2 ? buf.readLittleEndianUnsignedShort() : 0;
     @Nullable byte[] extra = (cbSize > 0 && buf.bytesLeft() >= cbSize) ? AsfLittleEndian.readBytes(buf, cbSize) : null;
     if (!AsfUtil.isSupportedWmaTag(wFormatTag)) {
       Log.w(TAG, "Stream #" + streamNumber + ": unsupported WAVEFORMATEX tag 0x" + Integer.toHexString(wFormatTag));
@@ -319,8 +319,8 @@ final class AsfHeaderReader {
       return new int[]{0, 0, 0};
     }
     int dsSpan = errCorrBuf.readUnsignedByte();
-    int dsPacketSize = AsfLittleEndian.readU16(errCorrBuf);
-    int dsChunkSize = AsfLittleEndian.readU16(errCorrBuf);
+    int dsPacketSize = errCorrBuf.readLittleEndianUnsignedShort();
+    int dsChunkSize = errCorrBuf.readLittleEndianUnsignedShort();
     errCorrBuf.skipBytes(3); // ds_data_size (2) + ds_silence_data (1)
     if (dsSpan > 1 && (dsChunkSize == 0 || dsPacketSize / dsChunkSize <= 1 || dsPacketSize % dsChunkSize != 0)) {
       Log.w(TAG, "Stream #" + streamNumber + ": invalid descrambling params; disabling");
@@ -334,18 +334,18 @@ final class AsfHeaderReader {
       return;
     }
     ParsableByteArray buf = new ParsableByteArray(typeSpec);
-    int encodedWidth = (int) AsfLittleEndian.readU32(buf);
-    int encodedHeight = (int) AsfLittleEndian.readU32(buf);
+    int encodedWidth = (int) buf.readLittleEndianUnsignedInt();
+    int encodedHeight = (int) buf.readLittleEndianUnsignedInt();
     buf.skipBytes(3); // reserved (1) + size field (2)
     if (buf.bytesLeft() < 40) {
       return;
     }
-    int biSize = (int) AsfLittleEndian.readU32(buf);
-    int biWidth = (int) AsfLittleEndian.readU32(buf);
-    int biHeight = (int) AsfLittleEndian.readU32(buf);
+    int biSize = (int) buf.readLittleEndianUnsignedInt();
+    int biWidth = (int) buf.readLittleEndianUnsignedInt();
+    int biHeight = (int) buf.readLittleEndianUnsignedInt();
     buf.skipBytes(2); // biPlanes
-    int biBitCount = AsfLittleEndian.readU16(buf);
-    int fourcc = AsfLittleEndian.readS32(buf);
+    int biBitCount = buf.readLittleEndianUnsignedShort();
+    int fourcc = buf.readLittleEndianInt();
     buf.skipBytes(20); // remaining BITMAPINFOHEADER fields
     int extraDataSize = biSize > 40 ? biSize - 40 : 0;
     @Nullable byte[] extra = (extraDataSize > 0 && buf.bytesLeft() >= extraDataSize) ? AsfLittleEndian.readBytes(buf, extraDataSize) : null;
