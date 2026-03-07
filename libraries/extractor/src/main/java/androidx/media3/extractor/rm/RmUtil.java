@@ -13,14 +13,6 @@ final class RmUtil {
   static final int SAMPLES_PER_CODEC_FRAME = 1024;
 
   /**
-   * Returns the duration in microseconds of one codec frame, or {@code 0} if {@code sampleRate}
-   * is not positive.
-   */
-  static long frameDurationUs(int sampleRate) {
-    return sampleRate > 0 ? SAMPLES_PER_CODEC_FRAME * 1_000_000L / sampleRate : 0L;
-  }
-
-  /**
    * Writes {@code size} bytes from {@code data} to {@code output} and immediately appends the
    * corresponding sample metadata.
    *

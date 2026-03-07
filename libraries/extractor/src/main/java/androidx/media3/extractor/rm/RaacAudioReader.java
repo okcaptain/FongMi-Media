@@ -2,6 +2,7 @@ package androidx.media3.extractor.rm;
 
 import androidx.media3.common.C;
 import androidx.media3.common.util.ParsableByteArray;
+import androidx.media3.common.util.Util;
 import androidx.media3.extractor.TrackOutput;
 
 /**
@@ -21,7 +22,9 @@ final class RaacAudioReader implements TrackReader {
 
   RaacAudioReader(TrackOutput trackOutput, int sampleRate) {
     this.trackOutput = trackOutput;
-    this.frameDurationUs = RmUtil.frameDurationUs(sampleRate);
+    this.frameDurationUs = sampleRate > 0
+        ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate)
+        : 0L;
   }
 
   @Override

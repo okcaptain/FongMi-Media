@@ -2,6 +2,7 @@ package androidx.media3.extractor.rm;
 
 import androidx.media3.common.C;
 import androidx.media3.common.util.ParsableByteArray;
+import androidx.media3.common.util.Util;
 import androidx.media3.extractor.TrackOutput;
 
 /**
@@ -96,7 +97,9 @@ final class CookAudioReader implements TrackReader {
 
   private void emitAccumulatedFrames() {
     int totalFrames = subPacketH * (frameSize / subPacketSize);
-    long frameDurationUs = RmUtil.frameDurationUs(sampleRate);
+    long frameDurationUs = sampleRate > 0
+        ? Util.sampleCountToDurationUs(RmUtil.SAMPLES_PER_CODEC_FRAME, sampleRate)
+        : 0L;
     for (int i = 0; i < totalFrames; i++) {
       int offset = i * subPacketSize;
       long frameTs = (groupTimestampUs != C.TIME_UNSET) ? groupTimestampUs + (long) i * frameDurationUs : 0L;
