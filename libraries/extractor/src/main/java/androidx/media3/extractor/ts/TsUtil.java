@@ -24,6 +24,9 @@ import androidx.media3.common.util.UnstableApi;
 @UnstableApi
 public final class TsUtil {
 
+  /** Number of consecutive sync bytes required to confirm TS packet alignment. */
+  public static final int SNIFF_TS_PACKET_COUNT = 5;
+
   /**
    * Returns whether a TS packet starts at {@code searchPosition} according to the MPEG-TS
    * synchronization recommendations.
@@ -65,6 +68,28 @@ public final class TsUtil {
       position++;
     }
     return position;
+  }
+
+  /**
+   * Returns the position of the first confirmed sync byte within [startPosition, limitPosition),
+   * or {@code limitPosition} if not found. A candidate is confirmed by checking that
+   * {@link #SNIFF_TS_PACKET_COUNT} sync bytes appear at {@code packetSize} intervals from it.
+   */
+  public static int tryToFindSyncBytePosition(byte[] data, int startPosition, int limitPosition, int packetSize) {
+    for (int offset = startPosition; offset < startPosition + packetSize && offset < limitPosition; offset++) {
+      boolean allMatch = true;
+      for (int i = 0; i < SNIFF_TS_PACKET_COUNT; i++) {
+        int pos = offset + i * packetSize;
+        if (pos >= limitPosition || data[pos] != TsExtractor.TS_SYNC_BYTE) {
+          allMatch = false;
+          break;
+        }
+      }
+      if (allMatch) {
+        return offset;
+      }
+    }
+    return limitPosition;
   }
 
   /**

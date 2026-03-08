@@ -160,7 +160,6 @@ public final class TsExtractor implements Extractor {
   private static final long HEVC_FORMAT_IDENTIFIER = 0x48455643;
 
   private static final int BUFFER_SIZE = TS_PACKET_SIZE * 50;
-  private static final int SNIFF_TS_PACKET_COUNT = 5;
 
   private final @Mode int mode;
   private final @Flags int extractorFlags;
@@ -356,18 +355,12 @@ public final class TsExtractor implements Extractor {
   @Override
   public boolean sniff(ExtractorInput input) throws IOException {
     byte[] buffer = tsPacketBuffer.getData();
-    int peekLength = TS_PACKET_SIZE * SNIFF_TS_PACKET_COUNT;
+    int peekLength = TS_PACKET_SIZE * TsUtil.SNIFF_TS_PACKET_COUNT;
     input.peekFully(buffer, 0, peekLength);
-    for (int offset = 0; offset < TS_PACKET_SIZE; offset++) {
-      for (int packetIndex = 0; packetIndex < SNIFF_TS_PACKET_COUNT; packetIndex++) {
-        if (buffer[offset + packetIndex * TS_PACKET_SIZE] != TS_SYNC_BYTE) {
-          break;
-        }
-        if (packetIndex == SNIFF_TS_PACKET_COUNT - 1) {
-          input.skipFully(offset);
-          return true;
-        }
-      }
+    int syncOffset = TsUtil.tryToFindSyncBytePosition(buffer, 0, peekLength, TS_PACKET_SIZE);
+    if (syncOffset < peekLength) {
+      input.skipFully(syncOffset);
+      return true;
     }
     return false;
   }
@@ -586,8 +579,7 @@ public final class TsExtractor implements Extractor {
   private int findEndOfFirstTsPacketInBuffer() {
     int searchStart = tsPacketBuffer.getPosition();
     int limit = tsPacketBuffer.limit();
-    int syncBytePosition =
-        TsUtil.findSyncBytePosition(tsPacketBuffer.getData(), searchStart, limit);
+    int syncBytePosition = TsUtil.findSyncBytePosition(tsPacketBuffer.getData(), searchStart, limit);
     // Discard all bytes before the sync byte.
     // If sync byte is not found, this means discard the whole buffer.
     tsPacketBuffer.setPosition(syncBytePosition);
