@@ -1,3 +1,18 @@
+/*
+ * Copyright 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package androidx.media3.extractor.asf;
 
 import androidx.annotation.Nullable;
@@ -90,6 +105,37 @@ final class AsfUtil {
     }
   }
 
+  private static String wmaTagToCodecString(int tag) {
+    switch (tag) {
+      case WAVE_FORMAT_WMA1:
+        return "wmav1";
+      case WAVE_FORMAT_WMA_PRO:
+        return "wmapro";
+      case WAVE_FORMAT_WMA_LOSS:
+        return "wmalossless";
+      case WAVE_FORMAT_WMA_VOICE:
+        return "wmavoice";
+      default:
+        return "wmav2";
+    }
+  }
+
+  private static String fourccToCodecString(int fourcc) {
+    if (fourcc == FOURCC_WMV1) {
+      return "wmv1";
+    }
+    if (fourcc == FOURCC_WMV2) {
+      return "wmv2";
+    }
+    if (fourcc == FOURCC_WMV3) {
+      return "wmv3";
+    }
+    if (fourcc == FOURCC_WVC1 || fourcc == FOURCC_WMVA) {
+      return "vc1";
+    }
+    return "wmv3";
+  }
+
   /**
    * Prepends the VC-1 sequence-header start code ({@code 00 00 01 0F}) if not already present.
    * Returns {@link #VC1_START_CODE} alone when {@code data} is null or empty.
@@ -174,7 +220,9 @@ final class AsfUtil {
   static Format buildAudioFormat(AudioStreamInfo audioInfo) {
     Format.Builder builder = new Format.Builder()
         .setId(String.valueOf(audioInfo.streamNumber))
+        .setContainerMimeType(MimeTypes.VIDEO_WMV)
         .setSampleMimeType(wmaTagToMimeType(audioInfo.waveFormatTag))
+        .setCodecs(wmaTagToCodecString(audioInfo.waveFormatTag))
         .setChannelCount(audioInfo.channelCount)
         .setSampleRate(audioInfo.sampleRate)
         .setAverageBitrate(audioInfo.avgBitrateBps);
@@ -194,7 +242,9 @@ final class AsfUtil {
   static Format buildVideoFormat(VideoStreamInfo videoInfo, float pixelWidthHeightRatio) {
     Format.Builder builder = new Format.Builder()
         .setId(String.valueOf(videoInfo.streamNumber))
+        .setContainerMimeType(MimeTypes.VIDEO_WMV)
         .setSampleMimeType(fourccToMimeType(videoInfo.fourcc))
+        .setCodecs(fourccToCodecString(videoInfo.fourcc))
         .setWidth(videoInfo.width)
         .setHeight(videoInfo.height)
         .setPixelWidthHeightRatio(pixelWidthHeightRatio);
