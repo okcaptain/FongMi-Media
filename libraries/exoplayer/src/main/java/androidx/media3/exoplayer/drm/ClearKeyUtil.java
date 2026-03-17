@@ -17,16 +17,29 @@ package androidx.media3.exoplayer.drm;
 
 import static android.os.Build.VERSION.SDK_INT;
 
+import android.util.Base64;
+import androidx.annotation.Nullable;
+import androidx.media3.common.C;
+import androidx.media3.common.DrmInitData.SchemeData;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.Util;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /** Utility methods for ClearKey. */
-/* package */ final class ClearKeyUtil {
+public final class ClearKeyUtil {
 
   private static final String TAG = "ClearKeyUtil";
+  private static final Pattern REGEX_KEYID = Pattern.compile("KEYID=0x([0-9a-fA-F]{32})");
+  private static final Pattern REGEX_PLAYREADY_KID_VALUE = Pattern.compile("VALUE=\\\"([^\"]+)\\\"");
+  private static final Pattern REGEX_PLAYREADY_KID_LEGACY = Pattern.compile("<KID>([^<]+)</KID>");
 
   private ClearKeyUtil() {}
 
@@ -92,5 +105,145 @@ import org.json.JSONObject;
 
   private static String base64UrlToBase64(String base64Url) {
     return base64Url.replace('-', '+').replace('_', '/');
+  }
+
+  @Nullable
+  public static byte[] buildClearKeyPssh(String line, SchemeData schemeData) {
+    byte[] pssh = buildClearKeyPsshFromKeyId(line);
+    return pssh != null ? pssh : buildClearKeyPssh(schemeData);
+  }
+
+  @Nullable
+  public static byte[] buildClearKeyPssh(SchemeData schemeData) {
+    if (!schemeData.hasData()) {
+      return null;
+    }
+    if (C.WIDEVINE_UUID.equals(schemeData.uuid)) {
+      return buildClearKeyPsshFromWidevinePssh(schemeData.data);
+    }
+    if (C.PLAYREADY_UUID.equals(schemeData.uuid)) {
+      return buildClearKeyPsshFromPlayReadyPssh(schemeData.data);
+    }
+    return null;
+  }
+
+  @Nullable
+  public static byte[] buildClearKeyPssh(List<SchemeData> schemeDatas) {
+    for (SchemeData sd : schemeDatas) {
+      if (C.WIDEVINE_UUID.equals(sd.uuid)) {
+        byte[] pssh = buildClearKeyPssh(sd);
+        if (pssh != null) {
+          return pssh;
+        }
+      }
+    }
+    for (SchemeData sd : schemeDatas) {
+      if (C.PLAYREADY_UUID.equals(sd.uuid)) {
+        byte[] pssh = buildClearKeyPssh(sd);
+        if (pssh != null) {
+          return pssh;
+        }
+      }
+    }
+    return null;
+  }
+
+  @Nullable
+  private static byte[] buildClearKeyPsshFromKeyId(String line) {
+    Matcher matcher = REGEX_KEYID.matcher(line);
+    if (!matcher.find()) {
+      return null;
+    }
+    String hex = matcher.group(1);
+    if (hex == null || hex.length() != 32) {
+      return null;
+    }
+    byte[] keyId = new byte[16];
+    for (int i = 0; i < 16; i++) {
+      keyId[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+    }
+    return buildCencPssh(keyId);
+  }
+
+  @Nullable
+  private static byte[] buildClearKeyPsshFromWidevinePssh(byte[] pssh) {
+    int pos = 32;
+    while (pos + 18 <= pssh.length) {
+      if ((pssh[pos] & 0xFF) == 0x12 && (pssh[pos + 1] & 0xFF) == 0x10) {
+        return buildCencPssh(Arrays.copyOfRange(pssh, pos + 2, pos + 18));
+      }
+      pos++;
+    }
+    return null;
+  }
+
+  @Nullable
+  private static byte[] buildClearKeyPsshFromPlayReadyPssh(byte[] pssh) {
+    try {
+      int pos = 38;
+      while (pos + 4 < pssh.length) {
+        int objectType = (pssh[pos] & 0xFF) | ((pssh[pos + 1] & 0xFF) << 8);
+        int objectLength = (pssh[pos + 2] & 0xFF) | ((pssh[pos + 3] & 0xFF) << 8);
+        pos += 4;
+        if (objectType == 1) {
+          if (pos + objectLength <= pssh.length) {
+            String xml = new String(pssh, pos, objectLength, StandardCharsets.UTF_16LE);
+            Matcher valueMatcher = REGEX_PLAYREADY_KID_VALUE.matcher(xml);
+            if (valueMatcher.find()) {
+              String encoded = valueMatcher.group(1);
+              if (encoded != null) {
+                byte[] kidLE = Base64.decode(encoded, Base64.DEFAULT);
+                if (kidLE.length == 16) {
+                  return buildCencPssh(playReadyKidToCenc(kidLE));
+                }
+              }
+            }
+            Matcher kidMatcher = REGEX_PLAYREADY_KID_LEGACY.matcher(xml);
+            if (kidMatcher.find()) {
+              String encoded = kidMatcher.group(1);
+              if (encoded != null) {
+                byte[] kidLE = Base64.decode(encoded, Base64.DEFAULT);
+                if (kidLE.length == 16) {
+                  return buildCencPssh(playReadyKidToCenc(kidLE));
+                }
+              }
+            }
+          }
+          break;
+        }
+        pos += objectLength;
+      }
+    } catch (Exception e) {
+      Log.w(TAG, "Failed to extract KID from PlayReady PSSH", e);
+    }
+    return null;
+  }
+
+  private static byte[] playReadyKidToCenc(byte[] kidLE) {
+    byte[] be = new byte[16];
+    be[0] = kidLE[3];
+    be[1] = kidLE[2];
+    be[2] = kidLE[1];
+    be[3] = kidLE[0];
+    be[4] = kidLE[5];
+    be[5] = kidLE[4];
+    be[6] = kidLE[7];
+    be[7] = kidLE[6];
+    System.arraycopy(kidLE, 8, be, 8, 8);
+    return be;
+  }
+
+  private static byte[] buildCencPssh(byte[] kid) {
+    int size = 4 + 4 + 4 + 16 + 4 + 16 + 4;
+    ByteBuffer buf = ByteBuffer.allocate(size);
+    buf.putInt(size);
+    buf.put(new byte[]{'p', 's', 's', 'h'});
+    buf.put(new byte[]{0x01, 0x00, 0x00, 0x00});
+    buf.putLong(C.COMMON_PSSH_UUID.getMostSignificantBits());
+    buf.putLong(C.COMMON_PSSH_UUID.getLeastSignificantBits());
+    buf.putInt(1);
+    buf.put(kid);
+    buf.putInt(0);
+    return buf.array();
   }
 }
