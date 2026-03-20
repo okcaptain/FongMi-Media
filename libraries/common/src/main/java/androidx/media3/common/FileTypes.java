@@ -45,12 +45,14 @@ public final class FileTypes {
    *   <li>{@link #ADTS}
    *   <li>{@link #AMR}
    *   <li>{@link #FLAC}
+   *   <li>{@link #FLV}
    *   <li>{@link #MATROSKA}
    *   <li>{@link #MP3}
    *   <li>{@link #MP4}
    *   <li>{@link #OGG}
    *   <li>{@link #PS}
    *   <li>{@link #TS}
+   *   <li>{@link #WAV}
    *   <li>{@link #WEBVTT}
    *   <li>{@link #JPEG}
    *   <li>{@link #MIDI}
@@ -63,6 +65,9 @@ public final class FileTypes {
    *   <li>{@link #ASF}
    *   <li>{@link #RM}
    *   <li>{@link #ISO}
+   *   <li>{@link #DSF}
+   *   <li>{@link #DFF}
+   *   <li>{@link #DTS}
    * </ul>
    */
   @Documented
@@ -70,7 +75,7 @@ public final class FileTypes {
   @Target(TYPE_USE)
   @IntDef({
     UNKNOWN, AC3, AC4, ADTS, AMR, FLAC, FLV, MATROSKA, MP3, MP4, OGG, PS, TS, WAV, WEBVTT, JPEG,
-    MIDI, AVI, PNG, WEBP, BMP, HEIF, AVIF, ASF, RM, ISO
+    MIDI, AVI, PNG, WEBP, BMP, HEIF, AVIF, ASF, RM, ISO, DSF, DFF, DTS
   })
   public @interface Type {}
 
@@ -143,14 +148,23 @@ public final class FileTypes {
   /** File type for the AVIF format. */
   public static final int AVIF = 21;
 
-  /** File type for the ASF format, including WMA and WMV. */
-  public static final int ASF = 22;
+  /** File type for the RealMedia format, including RM and RMVB. */
+  public static final int RM = 22;
 
-  /** File type for the RMVB format. */
-  public static final int RM = 23;
+  /** File type for the ASF format, including WMA and WMV. */
+  public static final int ASF = 23;
 
   /** File type for ISO disc image formats (DVD and Blu-ray). */
   public static final int ISO = 24;
+
+  /** File type for the DSF (DSD Stream File) format. */
+  public static final int DSF = 25;
+
+  /** File type for the DFF (DSDIFF) format. */
+  public static final int DFF = 26;
+
+  /** File type for the raw DTS audio format. */
+  public static final int DTS = 27;
 
   @VisibleForTesting /* package */ static final String HEADER_CONTENT_TYPE = "Content-Type";
 
@@ -200,6 +214,9 @@ public final class FileTypes {
   private static final String EXTENSION_RM = ".rm";
   private static final String EXTENSION_RMVB = ".rmvb";
   private static final String EXTENSION_ISO = ".iso";
+  private static final String EXTENSION_DSF = ".dsf";
+  private static final String EXTENSION_DFF = ".dff";
+  private static final String EXTENSION_DTS = ".dts";
 
   private FileTypes() {}
 
@@ -283,6 +300,16 @@ public final class FileTypes {
         return FileTypes.RM;
       case MimeTypes.VIDEO_ISO:
         return FileTypes.ISO;
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+        return FileTypes.DSF;
+      case MimeTypes.AUDIO_DSD:
+      case MimeTypes.AUDIO_DST:
+        return FileTypes.DFF;
+      case MimeTypes.AUDIO_DTS:
+      case MimeTypes.AUDIO_DTS_HD:
+      case MimeTypes.AUDIO_DTS_EXPRESS:
+        return FileTypes.DTS;
       default:
         return FileTypes.UNKNOWN;
     }
@@ -369,6 +396,12 @@ public final class FileTypes {
       return FileTypes.ASF;
     } else if (filename.endsWith(EXTENSION_ISO)) {
       return FileTypes.ISO;
+    } else if (filename.endsWith(EXTENSION_DSF)) {
+      return FileTypes.DSF;
+    } else if (filename.endsWith(EXTENSION_DFF)) {
+      return FileTypes.DFF;
+    } else if (filename.endsWith(EXTENSION_DTS)) {
+      return FileTypes.DTS;
     } else {
       return FileTypes.UNKNOWN;
     }

@@ -31,6 +31,7 @@ import androidx.media3.common.util.Log;
 import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
+import androidx.media3.extractor.DtsUtil;
 import androidx.media3.extractor.Extractor;
 import androidx.media3.extractor.ExtractorInput;
 import androidx.media3.extractor.ExtractorOutput;
@@ -38,6 +39,8 @@ import androidx.media3.extractor.ExtractorsFactory;
 import androidx.media3.extractor.PositionHolder;
 import androidx.media3.extractor.TrackOutput;
 import androidx.media3.extractor.WavUtil;
+import androidx.media3.extractor.ts.DtsReader;
+
 import java.io.IOException;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
@@ -45,6 +48,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
 /** Extracts data from WAV byte streams. */
@@ -59,6 +63,13 @@ public final class WavExtractor implements Extractor {
    * output for each second of media, meaning that each sample will have a duration of ~100ms.
    */
   private static final int TARGET_SAMPLES_PER_SECOND = 10;
+
+  /**
+   * Maximum number of bytes to peek when sniffing for an embedded DTS-CD bitstream in a PCM WAV
+   * file. 1024 DTS frames × 4096 bytes/frame = 4 MiB, consistent with the DTS sniff window used
+   * during sample data reading.
+   */
+  private static final int DTS_SNIFF_MAX_BYTES = 1024 * 4096;
 
   /** Factory for {@link WavExtractor} instances. */
   public static final ExtractorsFactory FACTORY = () -> new Extractor[] {new WavExtractor()};
@@ -89,6 +100,7 @@ public final class WavExtractor implements Extractor {
   private @MonotonicNonNull OutputWriter outputWriter;
   private int dataStartPosition;
   private long dataEndPosition;
+  private boolean needsDtsSniff;
 
   public WavExtractor() {
     state = STATE_READING_FILE_TYPE;
@@ -106,7 +118,6 @@ public final class WavExtractor implements Extractor {
   public void init(ExtractorOutput output) {
     extractorOutput = output;
     trackOutput = output.track(0, C.TRACK_TYPE_AUDIO);
-    output.endTracks();
   }
 
   @Override
@@ -178,6 +189,7 @@ public final class WavExtractor implements Extractor {
     WavFormat wavFormat = WavHeaderReader.readFormat(input);
     if (wavFormat.formatType == WavUtil.TYPE_IMA_ADPCM) {
       outputWriter = new ImaAdPcmOutputWriter(extractorOutput, trackOutput, wavFormat);
+      extractorOutput.endTracks();
     } else if (wavFormat.formatType == WavUtil.TYPE_ALAW) {
       outputWriter =
           new PassthroughOutputWriter(
@@ -186,6 +198,7 @@ public final class WavExtractor implements Extractor {
               wavFormat,
               MimeTypes.AUDIO_ALAW,
               /* pcmEncoding= */ Format.NO_VALUE);
+      extractorOutput.endTracks();
     } else if (wavFormat.formatType == WavUtil.TYPE_MLAW) {
       outputWriter =
           new PassthroughOutputWriter(
@@ -194,6 +207,7 @@ public final class WavExtractor implements Extractor {
               wavFormat,
               MimeTypes.AUDIO_MLAW,
               /* pcmEncoding= */ Format.NO_VALUE);
+      extractorOutput.endTracks();
     } else {
       @C.PcmEncoding
       int pcmEncoding =
@@ -205,6 +219,7 @@ public final class WavExtractor implements Extractor {
       outputWriter =
           new PassthroughOutputWriter(
               extractorOutput, trackOutput, wavFormat, MimeTypes.AUDIO_RAW, pcmEncoding);
+      needsDtsSniff = true;
     }
     state = STATE_SKIPPING_TO_SAMPLE_DATA;
   }
@@ -223,6 +238,20 @@ public final class WavExtractor implements Extractor {
     if (inputLength != C.LENGTH_UNSET && dataEndPosition > inputLength) {
       Log.w(TAG, "Data exceeds input length: " + dataEndPosition + ", " + inputLength);
       dataEndPosition = inputLength;
+    }
+    if (needsDtsSniff) {
+      long bytesAvail = dataEndPosition - input.getPosition();
+      int sniffLen = (int) Math.min(DTS_SNIFF_MAX_BYTES, bytesAvail);
+      input.resetPeekPosition();
+      int syncOffset = DtsUtil.findDtsCoreSync(input, sniffLen);
+      boolean isDts = syncOffset >= 0;
+      input.resetPeekPosition();
+      TrackOutput dtsTrackOutput = null;
+      if (isDts) {
+        dtsTrackOutput = checkNotNull(extractorOutput).track(1, C.TRACK_TYPE_AUDIO);
+      }
+      checkNotNull(extractorOutput).endTracks();
+      ((PassthroughOutputWriter) checkNotNull(outputWriter)).configureForDts(dtsTrackOutput);
     }
     checkNotNull(outputWriter).init(dataStartPosition, dataEndPosition);
     state = STATE_READING_SAMPLE_DATA;
@@ -273,13 +302,19 @@ public final class WavExtractor implements Extractor {
 
   private static final class PassthroughOutputWriter implements OutputWriter {
 
+    private static final int DTS_PACKET_SIZE = 4096;
+
     private final ExtractorOutput extractorOutput;
+    private @Nullable TrackOutput dtsTrackOutput;
     private final TrackOutput trackOutput;
     private final WavFormat wavFormat;
     private final Format format;
 
     /** The target size of each output sample, in bytes. */
     private final int targetSampleSizeBytes;
+
+    private @Nullable DtsReader dtsReader;
+    private @Nullable ParsableByteArray dtsPacket;
 
     /** The time at which the writer was last {@link #reset}. */
     private long startTimeUs;
@@ -337,6 +372,18 @@ public final class WavExtractor implements Extractor {
       startTimeUs = timeUs;
       pendingOutputBytes = 0;
       outputFrameCount = 0;
+      if (dtsReader != null) {
+        dtsReader.seek();
+        dtsReader.packetStarted(timeUs, 0);
+      }
+      if (dtsPacket != null) {
+        dtsPacket.setPosition(0);
+        dtsPacket.setLimit(0);
+      }
+    }
+
+    void configureForDts(@Nullable TrackOutput dtsTrackOutput) {
+      this.dtsTrackOutput = dtsTrackOutput;
     }
 
     @Override
@@ -346,10 +393,19 @@ public final class WavExtractor implements Extractor {
       extractorOutput.seekMap(wavSeekMap);
       trackOutput.format(format);
       trackOutput.durationUs(wavSeekMap.getDurationUs());
+      if (dtsTrackOutput != null) {
+        dtsReader = new DtsReader(null, 0, DTS_PACKET_SIZE, MimeTypes.AUDIO_WAV);
+        dtsReader.setTrackOutput(dtsTrackOutput, "1");
+        dtsReader.packetStarted(startTimeUs, 0);
+        dtsPacket = new ParsableByteArray(new byte[DTS_PACKET_SIZE], 0);
+      }
     }
 
     @Override
     public boolean sampleData(ExtractorInput input, long bytesLeft) throws IOException {
+      if (dtsTrackOutput != null) {
+        return dualTrackSampleData(input, bytesLeft);
+      }
       // Write sample data until we've reached the target sample size, or the end of the data.
       while (bytesLeft > 0 && pendingOutputBytes < targetSampleSizeBytes) {
         int bytesToRead = (int) min(targetSampleSizeBytes - pendingOutputBytes, bytesLeft);
@@ -362,9 +418,41 @@ public final class WavExtractor implements Extractor {
         }
       }
 
-      // Write the corresponding sample metadata. Samples must be a whole number of frames. It's
-      // possible that the number of pending output bytes is not a whole number of frames if the
-      // stream ended unexpectedly.
+      emitPcmSampleMetadata();
+      return bytesLeft <= 0;
+    }
+
+    private boolean dualTrackSampleData(ExtractorInput input, long bytesLeft) throws IOException {
+      ParsableByteArray packet = checkNotNull(this.dtsPacket);
+      DtsReader reader = checkNotNull(dtsReader);
+      while (bytesLeft > 0 && pendingOutputBytes < targetSampleSizeBytes) {
+        if (packet.bytesLeft() == 0) {
+          int bytesToRead = (int) min(bytesLeft, packet.capacity());
+          input.readFully(packet.getData(), 0, bytesToRead);
+          bytesLeft -= bytesToRead;
+          packet.setPosition(0);
+          packet.setLimit(bytesToRead);
+        }
+        if (packet.bytesLeft() == 0) {
+          break;
+        }
+        int chunkStart = packet.getPosition();
+        int chunkLen = packet.bytesLeft();
+        trackOutput.sampleData(packet, chunkLen);
+        pendingOutputBytes += chunkLen;
+        packet.setPosition(chunkStart);
+        while (packet.bytesLeft() > 0) {
+          reader.consume(packet);
+        }
+      }
+      emitPcmSampleMetadata();
+      if (bytesLeft <= 0) {
+        reader.packetFinished(true);
+      }
+      return bytesLeft <= 0;
+    }
+
+    private void emitPcmSampleMetadata() {
       int bytesPerFrame = wavFormat.blockSize;
       int pendingFrames = pendingOutputBytes / bytesPerFrame;
       if (pendingFrames > 0) {
@@ -379,8 +467,6 @@ public final class WavExtractor implements Extractor {
         outputFrameCount += pendingFrames;
         pendingOutputBytes = offset;
       }
-
-      return bytesLeft <= 0;
     }
   }
 

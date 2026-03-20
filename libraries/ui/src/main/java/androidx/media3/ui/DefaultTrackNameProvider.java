@@ -202,110 +202,115 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
       return "";
     }
     switch (mimeType) {
-      case MimeTypes.AUDIO_DTS:
-        return "DTS";
-      case MimeTypes.AUDIO_DTS_HD:
-        return "DTS-HD";
-      case MimeTypes.AUDIO_DTS_EXPRESS:
-        return "DTS-Express";
-      case MimeTypes.AUDIO_DSD:
-        return "DSD";
-      case MimeTypes.AUDIO_DST:
-        return "DST";
-      case MimeTypes.AUDIO_TRUEHD:
-        return "TrueHD";
+      case MimeTypes.AUDIO_AAC:
+        return buildAacName(format);
       case MimeTypes.AUDIO_AC3:
         return "AC-3";
-      case MimeTypes.AUDIO_E_AC3:
-        return "E-AC-3";
-      case MimeTypes.AUDIO_E_AC3_JOC:
-        return "E-AC-3-JOC";
       case MimeTypes.AUDIO_AC4:
         return "AC-4";
-      case MimeTypes.AUDIO_AAC:
-        return "AAC";
-      case MimeTypes.AUDIO_MPEG:
-        return "MP3";
-      case MimeTypes.AUDIO_MPEG_L2:
-        return "MP2";
-      case MimeTypes.AUDIO_VORBIS:
-        return "Vorbis";
-      case MimeTypes.AUDIO_OPUS:
-        return "Opus";
+      case MimeTypes.AUDIO_ALAC:
+        return "ALAC";
       case MimeTypes.AUDIO_AMR:
         return "AMR";
       case MimeTypes.AUDIO_AMR_NB:
         return "AMR-NB";
       case MimeTypes.AUDIO_AMR_WB:
         return "AMR-WB";
-      case MimeTypes.AUDIO_FLAC:
-        return "FLAC";
-      case MimeTypes.AUDIO_ALAC:
-        return "ALAC";
-      case MimeTypes.AUDIO_OGG:
-        return "OGG";
-      case MimeTypes.AUDIO_WAV:
-        return "WAV";
-      case MimeTypes.AUDIO_MIDI:
-        return "MIDI";
-      case MimeTypes.AUDIO_IAMF:
-        return "IAMF";
-      case MimeTypes.AUDIO_COOK:
-        return "COOK";
       case MimeTypes.AUDIO_ATRAC3:
         return "ATRAC3";
       case MimeTypes.AUDIO_ATRAC3P:
         return "ATRAC3+";
-      case MimeTypes.AUDIO_SIPR:
-        return "SIPR";
+      case MimeTypes.AUDIO_AV3A:
+        return "AV3A";
+      case MimeTypes.AUDIO_COOK:
+        return "COOK";
+      case MimeTypes.AUDIO_DSD:
+      case MimeTypes.AUDIO_DSD_LSBF_PLANAR:
+      case MimeTypes.AUDIO_DSD_MSBF_PLANAR:
+        return "DSD";
+      case MimeTypes.AUDIO_DST:
+        return "DST";
+      case MimeTypes.AUDIO_DTS:
+        return "DTS";
+      case MimeTypes.AUDIO_DTS_EXPRESS:
+        return "DTS-Express";
+      case MimeTypes.AUDIO_DTS_HD:
+        return "DTS-HD";
+      case MimeTypes.AUDIO_DTS_X:
+        return "DTS:X";
+      case MimeTypes.AUDIO_E_AC3:
+        return "E-AC-3";
+      case MimeTypes.AUDIO_E_AC3_JOC:
+        return "E-AC-3 JOC";
+      case MimeTypes.AUDIO_FLAC:
+        return "FLAC";
+      case MimeTypes.AUDIO_IAMF:
+        return "IAMF";
+      case MimeTypes.AUDIO_MIDI:
+        return "MIDI";
+      case MimeTypes.AUDIO_MPEG_L1:
+        return "MP1";
+      case MimeTypes.AUDIO_MPEG_L2:
+        return "MP2";
+      case MimeTypes.AUDIO_MPEG:
+        return "MP3";
+      case MimeTypes.AUDIO_MPEGH_MHA1:
+      case MimeTypes.AUDIO_MPEGH_MHM1:
+        return "MPEG-H";
+      case MimeTypes.AUDIO_OGG:
+        return "OGG";
+      case MimeTypes.AUDIO_OPUS:
+        return "Opus";
       case MimeTypes.AUDIO_RALF:
         return "RALF";
+      case MimeTypes.AUDIO_SIPR:
+        return "SIPR";
+      case MimeTypes.AUDIO_TRUEHD:
+        return buildTrueHdName(format);
+      case MimeTypes.AUDIO_VORBIS:
+        return "Vorbis";
+      case MimeTypes.AUDIO_WAV:
+        return "WAV";
+      case MimeTypes.AUDIO_WMA:
+        return "WMA";
       case MimeTypes.AUDIO_WMA1:
         return "WMA1";
       case MimeTypes.AUDIO_WMA2:
         return "WMA2";
-      case MimeTypes.AUDIO_WMA_PRO:
-        return "WMA Pro";
       case MimeTypes.AUDIO_WMA_LOSSLESS:
         return "WMA Lossless";
+      case MimeTypes.AUDIO_WMA_PRO:
+        return "WMA Pro";
       case MimeTypes.AUDIO_WMA_VOICE:
         return "WMA Voice";
-      case MimeTypes.AUDIO_AV3A:
-        return "AV3A";
-      case MimeTypes.VIDEO_MP4:
-        return "MP4";
-      case MimeTypes.VIDEO_FLV:
-        return "FLV";
+      case MimeTypes.VIDEO_APV:
+        return "APV";
       case MimeTypes.VIDEO_AV1:
         return "AV1";
       case MimeTypes.VIDEO_AVI:
         return "AVI";
-      case MimeTypes.VIDEO_MPEG:
-        return "MPEG";
-      case MimeTypes.VIDEO_MPEG2:
-        return "MPEG2";
-      case MimeTypes.VIDEO_H263:
-        return "H263";
-      case MimeTypes.VIDEO_H264:
-        return "H264";
-      case MimeTypes.VIDEO_H265:
-        return "H265";
-      case MimeTypes.VIDEO_VC1:
-        return "VC1";
-      case MimeTypes.VIDEO_WMV:
-        return "WMV";
-      case MimeTypes.VIDEO_WMV1:
-        return "WMV1";
-      case MimeTypes.VIDEO_WMV2:
-        return "WMV2";
-      case MimeTypes.VIDEO_VP8:
-        return "VP8";
-      case MimeTypes.VIDEO_VP9:
-        return "VP9";
       case MimeTypes.VIDEO_DIVX:
         return "DIVX";
       case MimeTypes.VIDEO_DOLBY_VISION:
-        return "DOLBY";
+        return buildDolbyVisionName(format);
+      case MimeTypes.VIDEO_FLV:
+        return "FLV";
+      case MimeTypes.VIDEO_H263:
+        return "H.263";
+      case MimeTypes.VIDEO_H264:
+        return "H.264";
+      case MimeTypes.VIDEO_H265:
+        return "H.265";
+      case MimeTypes.VIDEO_MJPEG:
+        return "MJPEG";
+      case MimeTypes.VIDEO_MP4:
+        return "MP4";
+      case MimeTypes.VIDEO_MP4V:
+        return "MPEG-4";
+      case MimeTypes.VIDEO_MPEG:
+        return "MPEG";
+      case MimeTypes.VIDEO_MPEG2:
+        return "MPEG-2";
       case MimeTypes.VIDEO_RV10:
         return "RV10";
       case MimeTypes.VIDEO_RV20:
@@ -314,10 +319,24 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "RV30";
       case MimeTypes.VIDEO_RV40:
         return "RV40";
+      case MimeTypes.VIDEO_VC1:
+        return "VC-1";
+      case MimeTypes.VIDEO_VP8:
+        return "VP8";
+      case MimeTypes.VIDEO_VP9:
+        return "VP9";
+      case MimeTypes.VIDEO_WMV:
+        return "WMV";
+      case MimeTypes.VIDEO_WMV1:
+        return "WMV1";
+      case MimeTypes.VIDEO_WMV2:
+        return "WMV2";
       case MimeTypes.TEXT_SSA:
         return "SSA";
       case MimeTypes.TEXT_VTT:
         return "VTT";
+      case MimeTypes.APPLICATION_DVBSUBS:
+        return "DVB";
       case MimeTypes.APPLICATION_PGS:
         return "PGS";
       case MimeTypes.APPLICATION_SUBRIP:
@@ -326,10 +345,50 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "TTML";
       case MimeTypes.APPLICATION_TX3G:
         return "TX3G";
-      case MimeTypes.APPLICATION_DVBSUBS:
-        return "DVB";
+      case MimeTypes.APPLICATION_VOBSUB:
+        return "VobSub";
       default:
         return mimeType;
     }
+  }
+
+  private static String buildAacName(Format format) {
+    if (format.codecs != null) {
+      String[] parts = format.codecs.split("\\.");
+      if (parts.length >= 3 && "mp4a".equals(parts[0]) && "40".equals(parts[1])) {
+        switch (parts[2]) {
+          case "2":
+            return "AAC-LC";
+          case "5":
+            return "HE-AAC";
+          case "29":
+            return "HE-AAC v2";
+          case "42":
+            return "xHE-AAC";
+          default:
+            break;
+        }
+      }
+    }
+    return "AAC";
+  }
+
+  private static String buildTrueHdName(Format format) {
+    return "atmos".equals(format.codecs) ? "TrueHD + Atmos" : "TrueHD";
+  }
+
+  private static String buildDolbyVisionName(Format format) {
+    if (format.codecs != null) {
+      String[] parts = format.codecs.split("\\.");
+      if (parts.length >= 2) {
+        try {
+          int profile = Integer.parseInt(parts[1]);
+          return "Dolby Vision Profile " + profile;
+        } catch (NumberFormatException e) {
+          // fall through
+        }
+      }
+    }
+    return "Dolby Vision";
   }
 }
