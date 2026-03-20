@@ -86,7 +86,8 @@ import java.io.IOException;
       int firstByte = scratch[0] & 0xFF;
       length = parseUnsignedVarintLength(firstByte);
       if (length == C.LENGTH_UNSET) {
-        throw new IllegalStateException("No valid varint length mask found");
+        state = STATE_BEGIN_READING;
+        return C.RESULT_MAX_LENGTH_EXCEEDED;
       }
       state = STATE_READ_CONTENTS;
     }

@@ -104,6 +104,12 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
       if (elementState == ELEMENT_STATE_READ_CONTENT_SIZE) {
         elementContentSize = varintReader.readUnsignedVarint(input, false, true, MAX_LENGTH_BYTES);
+        if (elementContentSize == C.RESULT_MAX_LENGTH_EXCEEDED) {
+          masterElementsStack.clear();
+          elementId = (int) maybeResyncToNextLevel1Element(input);
+          elementState = ELEMENT_STATE_READ_CONTENT_SIZE;
+          continue;
+        }
         elementState = ELEMENT_STATE_READ_CONTENT;
       }
 
