@@ -37,7 +37,7 @@ import java.io.IOException;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
-/** Extracts data from the MPEG-2 PS container format. */
+/** Extracts data from the MPEG-1 and MPEG-2 PS container format. */
 @UnstableApi
 public final class PsExtractor implements Extractor {
 
@@ -67,6 +67,7 @@ public final class PsExtractor implements Extractor {
   private final ParsableByteArray psPacketBuffer;
   private final PsDurationReader durationReader;
 
+  private boolean isMpeg1;
   private boolean foundAllTracks;
   private boolean foundAudioTrack;
   private boolean foundVideoTrack;
@@ -103,7 +104,12 @@ public final class PsExtractor implements Extractor {
             | (scratch[3] & 0xFF))) {
       return false;
     }
-    // Verify the 01xxx1xx marker on the 5th byte
+    // MPEG-1 PS: byte 4 high nibble is '0010' (as per ISO 11172-1 pack_header).
+    if ((scratch[4] & 0xF0) == 0x20) {
+      isMpeg1 = true;
+      return true;
+    }
+    // MPEG-2 PS: byte 4 format is '01xxx1xx'
     if ((scratch[4] & 0xC4) != 0x44) {
       return false;
     }
@@ -203,17 +209,19 @@ public final class PsExtractor implements Extractor {
     if (nextStartCode == MPEG_PROGRAM_END_CODE) {
       return RESULT_END_OF_INPUT;
     } else if (nextStartCode == PACK_START_CODE) {
-      // Now peek the rest of the pack_header.
-      input.peekFully(psPacketBuffer.getData(), 0, 10);
-
-      // We only care about the pack_stuffing_length in here, skip the first 77 bits.
-      psPacketBuffer.setPosition(9);
-
-      // Last 3 bits is the length.
-      int packStuffingLength = psPacketBuffer.readUnsignedByte() & 0x07;
-
-      // Now skip the stuffing and the pack header.
-      input.skipFully(packStuffingLength + 14);
+      if (isMpeg1) {
+        // MPEG-1 pack header is always 12 bytes (4-byte start code + 8 bytes, no stuffing).
+        input.skipFully(12);
+      } else {
+        // MPEG-2: peek 10 more bytes to find the pack_stuffing_length.
+        input.peekFully(psPacketBuffer.getData(), 0, 10);
+        // We only care about the pack_stuffing_length in here, skip the first 77 bits.
+        psPacketBuffer.setPosition(9);
+        // Last 3 bits is the length.
+        int packStuffingLength = psPacketBuffer.readUnsignedByte() & 0x07;
+        // Now skip the stuffing and the pack header.
+        input.skipFully(packStuffingLength + 14);
+      }
       return RESULT_CONTINUE;
     } else if (nextStartCode == SYSTEM_HEADER_START_CODE) {
       // We just skip all this, but we need to get the length first.
@@ -250,7 +258,7 @@ public final class PsExtractor implements Extractor {
           foundAudioTrack = true;
           lastTrackPosition = input.getPosition();
         } else if ((streamId & VIDEO_STREAM_MASK) == VIDEO_STREAM) {
-          elementaryStreamReader = new H262Reader(MimeTypes.VIDEO_PS);
+          elementaryStreamReader = new H262Reader(MimeTypes.VIDEO_PS, isMpeg1 ? MimeTypes.VIDEO_MPEG : MimeTypes.VIDEO_MPEG2);
           foundVideoTrack = true;
           lastTrackPosition = input.getPosition();
         }
@@ -351,6 +359,13 @@ public final class PsExtractor implements Extractor {
      * @throws ParserException If the payload could not be parsed.
      */
     public void consume(ParsableByteArray data) throws ParserException {
+      // Detect MPEG-1 vs MPEG-2 PES from the payload itself.
+      // MPEG-2 PES flags byte always has bits 7-6 = '10' (0x80). MPEG-1 starts
+      // with stuffing (0xFF), optional STD buffer (0x4x), or PTS/DTS marker (0x2x/0x3x).
+      if (data.bytesLeft() > 0 && (data.getData()[data.getPosition()] & 0xC0) != 0x80) {
+        consumeMpeg1Pes(data);
+        return;
+      }
       data.readBytes(pesScratch.data, 0, 3);
       pesScratch.setPosition(0);
       parseHeader();
@@ -361,6 +376,65 @@ public final class PsExtractor implements Extractor {
       pesPayloadReader.consume(data);
       // We always have complete PES packets with program stream.
       pesPayloadReader.packetFinished(/* isEndOfInput= */ false);
+    }
+
+    /**
+     * Parses an MPEG-1 PES header and delivers the payload to the elementary stream reader.
+     *
+     * <p>MPEG-1 PES headers differ from MPEG-2: they use stuffing bytes (0xFF), an optional
+     * STD buffer field, and a different PTS/DTS encoding without a fixed-length header.
+     */
+    private void consumeMpeg1Pes(ParsableByteArray data) throws ParserException {
+      timeUs = 0;
+      while (data.bytesLeft() > 0 && data.getData()[data.getPosition()] == (byte) 0xFF) {
+        data.skipBytes(1);
+      }
+      if (data.bytesLeft() == 0) {
+        return;
+      }
+      if ((data.getData()[data.getPosition()] & 0xC0) == 0x40) {
+        data.skipBytes(2);
+      }
+      if (data.bytesLeft() == 0) {
+        return;
+      }
+      int firstByte = data.getData()[data.getPosition()] & 0xFF;
+      int firstNibble = firstByte >> 4;
+      if (firstNibble == 0x2 || firstNibble == 0x3) {
+        if (data.bytesLeft() < 5) {
+          return;
+        }
+        data.readBytes(pesScratch.data, 0, 5);
+        pesScratch.setPosition(0);
+        pesScratch.skipBits(4);
+        long pts = (long) pesScratch.readBits(3) << 30;
+        pesScratch.skipBits(1);
+        pts |= (long) pesScratch.readBits(15) << 15;
+        pesScratch.skipBits(1);
+        pts |= pesScratch.readBits(15);
+        pesScratch.skipBits(1);
+        timeUs = timestampAdjuster.adjustTsTimestamp(pts);
+        if (firstNibble == 0x3 && data.bytesLeft() >= 5) {
+          data.readBytes(pesScratch.data, 0, 5);
+          pesScratch.setPosition(0);
+          pesScratch.skipBits(4);
+          long dts = (long) pesScratch.readBits(3) << 30;
+          pesScratch.skipBits(1);
+          dts |= (long) pesScratch.readBits(15) << 15;
+          pesScratch.skipBits(1);
+          dts |= pesScratch.readBits(15);
+          pesScratch.skipBits(1);
+          if (!seenFirstDts) {
+            timestampAdjuster.adjustTsTimestamp(dts);
+            seenFirstDts = true;
+          }
+        }
+      } else if (firstByte == 0x0F) {
+        data.skipBytes(1);
+      }
+      pesPayloadReader.packetStarted(timeUs, TsPayloadReader.FLAG_DATA_ALIGNMENT_INDICATOR);
+      pesPayloadReader.consume(data);
+      pesPayloadReader.packetFinished(false);
     }
 
     private void parseHeader() {
@@ -383,7 +457,7 @@ public final class PsExtractor implements Extractor {
         pesScratch.skipBits(4); // '0010' or '0011'
         long pts = (long) pesScratch.readBits(3) << 30;
         pesScratch.skipBits(1); // marker_bit
-        pts |= pesScratch.readBits(15) << 15;
+        pts |= (long) pesScratch.readBits(15) << 15;
         pesScratch.skipBits(1); // marker_bit
         pts |= pesScratch.readBits(15);
         pesScratch.skipBits(1); // marker_bit
@@ -391,7 +465,7 @@ public final class PsExtractor implements Extractor {
           pesScratch.skipBits(4); // '0011'
           long dts = (long) pesScratch.readBits(3) << 30;
           pesScratch.skipBits(1); // marker_bit
-          dts |= pesScratch.readBits(15) << 15;
+          dts |= (long) pesScratch.readBits(15) << 15;
           pesScratch.skipBits(1); // marker_bit
           dts |= pesScratch.readBits(15);
           pesScratch.skipBits(1); // marker_bit

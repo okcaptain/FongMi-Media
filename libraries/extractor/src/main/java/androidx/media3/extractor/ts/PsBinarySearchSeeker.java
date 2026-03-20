@@ -143,16 +143,18 @@ import java.io.IOException;
      */
     private static void skipToEndOfCurrentPack(ParsableByteArray packetBuffer) {
       int limit = packetBuffer.limit();
+      // MPEG-1 PS pack header (ISO 11172-1): byte[0] top nibble is '0010', fixed 8 bytes, no stuffing.
+      boolean isMpeg1 = packetBuffer.bytesLeft() >= 1 && (packetBuffer.getData()[packetBuffer.getPosition()] & 0xF0) == 0x20;
 
-      if (packetBuffer.bytesLeft() < 10) {
+      if (packetBuffer.bytesLeft() < (isMpeg1 ? 8 : 10)) {
         // We require at least 9 bytes for pack header to read SCR value + 1 byte for pack_stuffing
         // length.
         packetBuffer.setPosition(limit);
         return;
       }
-      packetBuffer.skipBytes(9);
+      packetBuffer.skipBytes(isMpeg1 ? 8 : 9);
 
-      int packStuffingLength = packetBuffer.readUnsignedByte() & 0x07;
+      int packStuffingLength = isMpeg1 ? 0 : packetBuffer.readUnsignedByte() & 0x07;
       if (packetBuffer.bytesLeft() < packStuffingLength) {
         packetBuffer.setPosition(limit);
         return;

@@ -120,16 +120,20 @@ import java.io.IOException;
   public static long readScrValueFromPack(ParsableByteArray packetBuffer) {
     int originalPosition = packetBuffer.getPosition();
     if (packetBuffer.bytesLeft() < 9) {
-      // We require at 9 bytes for pack header to read scr value
+      // We require at least 9 bytes for the pack header to read the SCR value.
       return C.TIME_UNSET;
     }
     byte[] scrBytes = new byte[9];
     packetBuffer.readBytes(scrBytes, /* offset= */ 0, scrBytes.length);
     packetBuffer.setPosition(originalPosition);
-    if (!checkMarkerBits(scrBytes)) {
-      return C.TIME_UNSET;
+    if (checkMarkerBits(scrBytes)) {
+      return readScrValueFromPackHeader(scrBytes);
     }
-    return readScrValueFromPackHeader(scrBytes);
+    // Try MPEG-1 PS pack header (ISO 11172-1): byte[0] = '0010 SCR[32:30] 1'
+    if (checkMarkerBitsMpeg1(scrBytes)) {
+      return readScrValueFromMpeg1PackHeader(scrBytes);
+    }
+    return C.TIME_UNSET;
   }
 
   private int finishReadDuration(ExtractorInput input) {
@@ -258,5 +262,26 @@ import java.io.IOException;
         | (scrBytes[2] & 0b00000011L) << 13
         | (scrBytes[3] & 0xFFL) << 5
         | (scrBytes[4] & 0b11111000L) >> 3;
+  }
+
+  private static boolean checkMarkerBitsMpeg1(byte[] scrBytes) {
+    // byte[0]: '0010 SCR[32:30] 1' — top nibble is 0010, bit 0 is marker 1.
+    if ((scrBytes[0] & 0xF1) != 0x21) {
+      return false;
+    }
+    // byte[2]: 'SCR[21:15] 1' — bit 0 is marker 1.
+    if ((scrBytes[2] & 0x01) != 0x01) {
+      return false;
+    }
+    // byte[4]: 'SCR[6:0] 1' — bit 0 is marker 1.
+    return (scrBytes[4] & 0x01) == 0x01;
+  }
+
+  private static long readScrValueFromMpeg1PackHeader(byte[] scrBytes) {
+    return ((scrBytes[0] & 0x0EL) >> 1) << 30
+        | (scrBytes[1] & 0xFFL) << 22
+        | ((scrBytes[2] & 0xFEL) >> 1) << 15
+        | (scrBytes[3] & 0xFFL) << 7
+        | ((scrBytes[4] & 0xFEL) >> 1);
   }
 }
