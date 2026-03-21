@@ -209,6 +209,7 @@ public final class AacUtil {
    */
   public static Config parseAudioSpecificConfig(ParsableBitArray bitArray, boolean forceReadToEnd)
       throws ParserException {
+    int ascStartPosition = bitArray.getPosition();
     int audioObjectType = getAudioObjectType(bitArray);
     int sampleRateHz = getSamplingFrequency(bitArray);
     int channelConfiguration = bitArray.readBits(4);
@@ -228,7 +229,8 @@ public final class AacUtil {
       }
     }
 
-    if (forceReadToEnd) {
+    int channelCountFromPce = 0;
+    if (forceReadToEnd || channelConfiguration == 0) {
       switch (audioObjectType) {
         case 1:
         case 2:
@@ -242,33 +244,40 @@ public final class AacUtil {
         case 21:
         case 22:
         case 23:
-          parseGaSpecificConfig(bitArray, audioObjectType, channelConfiguration);
+          channelCountFromPce = parseGaSpecificConfig(bitArray, audioObjectType, channelConfiguration, ascStartPosition);
           break;
         default:
-          throw ParserException.createForUnsupportedContainerFeature(
-              "Unsupported audio object type: " + audioObjectType);
-      }
-      switch (audioObjectType) {
-        case 17:
-        case 19:
-        case 20:
-        case 21:
-        case 22:
-        case 23:
-          int epConfig = bitArray.readBits(2);
-          if (epConfig == 2 || epConfig == 3) {
+          if (forceReadToEnd) {
             throw ParserException.createForUnsupportedContainerFeature(
-                "Unsupported epConfig: " + epConfig);
+                "Unsupported audio object type: " + audioObjectType);
           }
-          break;
-        default:
-          break;
+      }
+      if (forceReadToEnd) {
+        switch (audioObjectType) {
+          case 17:
+          case 19:
+          case 20:
+          case 21:
+          case 22:
+          case 23:
+            int epConfig = bitArray.readBits(2);
+            if (epConfig == 2 || epConfig == 3) {
+              throw ParserException.createForUnsupportedContainerFeature(
+                  "Unsupported epConfig: " + epConfig);
+            }
+            break;
+          default:
+            break;
+        }
       }
     }
     // For supported containers, bits_to_decode() is always 0.
-    int channelCount = AUDIO_SPECIFIC_CONFIG_CHANNEL_COUNT_TABLE[channelConfiguration];
+    int channelCount = channelConfiguration == 0 ? channelCountFromPce : AUDIO_SPECIFIC_CONFIG_CHANNEL_COUNT_TABLE[channelConfiguration];
     if (channelCount == AUDIO_SPECIFIC_CONFIG_CHANNEL_CONFIGURATION_INVALID) {
-      throw ParserException.createForMalformedContainer(/* message= */ null, /* cause= */ null);
+      if (channelConfiguration != 0) {
+        throw ParserException.createForMalformedContainer(/* message= */ null, /* cause= */ null);
+      }
+      channelCount = 1;
     }
     return new Config(sampleRateHz, channelCount, codecs);
   }
@@ -356,8 +365,8 @@ public final class AacUtil {
     return samplingFrequency;
   }
 
-  private static void parseGaSpecificConfig(
-      ParsableBitArray bitArray, int audioObjectType, int channelConfiguration) {
+  private static int parseGaSpecificConfig(
+      ParsableBitArray bitArray, int audioObjectType, int channelConfiguration, int ascStartPosition) {
     boolean frameLengthFlag = bitArray.readBit();
     if (frameLengthFlag) {
       Log.w(TAG, "Unexpected frameLengthFlag = 1");
@@ -367,11 +376,12 @@ public final class AacUtil {
       bitArray.skipBits(14); // coreCoderDelay.
     }
     boolean extensionFlag = bitArray.readBit();
-    if (channelConfiguration == 0) {
-      throw new UnsupportedOperationException(); // TODO: Implement programConfigElement();
-    }
     if (audioObjectType == 6 || audioObjectType == 20) {
       bitArray.skipBits(3); // layerNr.
+    }
+    int channelCount = 0;
+    if (channelConfiguration == 0 && bitArray.bitsLeft() > 0) {
+      channelCount = parseProgramConfigElement(bitArray, ascStartPosition);
     }
     if (extensionFlag) {
       if (audioObjectType == 22) {
@@ -387,6 +397,45 @@ public final class AacUtil {
       }
       bitArray.skipBits(1); // extensionFlag3.
     }
+    return channelCount;
+  }
+
+  private static int parseProgramConfigElement(ParsableBitArray bitArray, int ascStartPosition) {
+    bitArray.skipBits(4);
+    bitArray.skipBits(2);
+    bitArray.skipBits(4);
+    int numFront = bitArray.readBits(4);
+    int numSide = bitArray.readBits(4);
+    int numBack = bitArray.readBits(4);
+    int numLfe = bitArray.readBits(2);
+    int numAssoc = bitArray.readBits(3);
+    int numCc = bitArray.readBits(4);
+    if (bitArray.readBit()) {
+      bitArray.skipBits(4);
+    }
+    if (bitArray.readBit()) {
+      bitArray.skipBits(4);
+    }
+    if (bitArray.readBit()) {
+      bitArray.skipBits(3);
+    }
+    int channelCount = 0;
+    for (int i = 0; i < numFront + numSide + numBack; i++) {
+      channelCount += bitArray.readBit() ? 2 : 1;
+      bitArray.skipBits(4);
+    }
+    for (int i = 0; i < numLfe; i++) {
+      channelCount++;
+      bitArray.skipBits(4);
+    }
+    bitArray.skipBits(numAssoc * 4);
+    bitArray.skipBits(numCc * 5);
+    int bitsFromAscStart = bitArray.getPosition() - ascStartPosition;
+    int alignBits = (8 - bitsFromAscStart % 8) % 8;
+    bitArray.skipBits(alignBits);
+    int commentFieldBytes = bitArray.readBits(8);
+    bitArray.skipBits(8 * commentFieldBytes);
+    return channelCount;
   }
 
   private AacUtil() {}
