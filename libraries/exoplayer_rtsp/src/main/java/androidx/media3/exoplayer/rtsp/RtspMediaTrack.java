@@ -169,12 +169,9 @@ import com.google.common.collect.ImmutableMap;
    */
   public RtspMediaTrack(
       RtspHeaders rtspHeaders, MediaDescription mediaDescription, Uri sessionUri) {
-    checkArgument(
-        mediaDescription.attributes.containsKey(ATTR_CONTROL), "missing attribute control");
+    String controlAttr = mediaDescription.attributes.containsKey(ATTR_CONTROL) ? castNonNull(mediaDescription.attributes.get(ATTR_CONTROL)) : GENERIC_CONTROL_ATTR;
     payloadFormat = generatePayloadFormat(mediaDescription);
-    uri =
-        extractTrackUri(
-            rtspHeaders, sessionUri, castNonNull(mediaDescription.attributes.get(ATTR_CONTROL)));
+    uri = extractTrackUri(rtspHeaders, sessionUri, controlAttr);
   }
 
   @Override
@@ -295,6 +292,7 @@ import com.google.common.collect.ImmutableMap;
       case MimeTypes.AUDIO_AC3:
       case MimeTypes.AUDIO_ALAW:
       case MimeTypes.AUDIO_MLAW:
+      case MimeTypes.VIDEO_MP2T:
       // Does not require a fmtp attribute. Fall through.
       default:
         // Do nothing.

@@ -78,6 +78,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
   @Nullable private RtpDataChannel dataChannel;
   private @MonotonicNonNull RtpExtractor extractor;
   private @MonotonicNonNull DefaultExtractorInput extractorInput;
+  private final PositionHolder positionHolder;
 
   private volatile boolean loadCancelled;
   private volatile long pendingSeekPositionUs;
@@ -107,6 +108,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     this.playbackThreadHandler = Util.createHandlerForCurrentLooper();
     this.rtpDataChannelFactory = rtpDataChannelFactory;
     pendingSeekPositionUs = C.TIME_UNSET;
+    positionHolder = new PositionHolder();
   }
 
   /**
@@ -172,7 +174,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
         @Extractor.ReadResult
         int readResult =
             checkNotNull(extractor)
-                .read(checkNotNull(extractorInput), /* seekPosition= */ new PositionHolder());
+                .read(checkNotNull(extractorInput), /* seekPosition= */ positionHolder);
         if (readResult == Extractor.RESULT_END_OF_INPUT) {
           // Loading is finished.
           break;

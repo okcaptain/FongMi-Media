@@ -69,7 +69,10 @@ import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.net.SocketFactory;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
@@ -105,6 +108,12 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
    * KeepAliveMonitor#intervalMs}.
    */
   private static final int DEFAULT_RTSP_KEEP_ALIVE_INTERVAL_DIVISOR = 2;
+
+  /** Maximum redirects before treating the session as failed, to guard against redirect loops. */
+  private static final int MAX_REDIRECT_COUNT = 10;
+
+  /** Matches {@code src} attribute in {@code <video>} or {@code <ref>} elements in SMIL XML. */
+  private static final Pattern SMIL_SRC_PATTERN = Pattern.compile("<(?:video|ref)\\b[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
 
   /** A listener for session information update. */
   public interface SessionInfoListener {
@@ -144,6 +153,9 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
   // TODO(b/172331505) Add a timeout monitor for pending requests.
   private final SparseArray<RtspRequest> pendingRequests;
   private final MessageSender messageSender;
+  @Nullable private final String overrideRange;
+  private final long clockRangeStartEpochMs;
+  private final long clockRangeEndEpochMs;
 
   /** RTSP session URI. */
   private Uri uri;
@@ -159,6 +171,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
   private boolean receivedAuthorizationRequest;
   private boolean hasPendingPauseRequest;
   private long pendingSeekPositionUs;
+  private int redirectCount;
 
   /**
    * Creates a new instance.
@@ -182,12 +195,30 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       String userAgent,
       Uri uri,
       SocketFactory socketFactory,
-      boolean debugLoggingEnabled) {
+      boolean debugLoggingEnabled,
+      @Nullable String overrideRange) {
     this.sessionInfoListener = sessionInfoListener;
     this.playbackEventListener = playbackEventListener;
     this.userAgent = userAgent;
     this.socketFactory = socketFactory;
     this.debugLoggingEnabled = debugLoggingEnabled;
+    this.overrideRange = overrideRange;
+    long clockStart = C.TIME_UNSET;
+    long clockEnd = C.TIME_UNSET;
+    if (overrideRange != null && overrideRange.startsWith("clock=")) {
+      Matcher m = RtspSessionTiming.CLOCK_RANGE_PATTERN.matcher(overrideRange);
+      if (m.find()) {
+        try {
+          clockStart = RtspSessionTiming.parseClockTimeMs(m.group(1));
+          if (m.group(2) != null) {
+            clockEnd = RtspSessionTiming.parseClockTimeMs(m.group(2));
+          }
+        } catch (ParserException ignored) {
+        }
+      }
+    }
+    this.clockRangeStartEpochMs = clockStart;
+    this.clockRangeEndEpochMs = clockEnd;
     this.pendingSetupRtpLoadInfos = new ArrayDeque<>();
     this.pendingRequests = new SparseArray<>();
     this.messageSender = new MessageSender();
@@ -372,6 +403,44 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     return trackListBuilder.build();
   }
 
+  /**
+   * Extracts the first stream URI from a SMIL XML response body, or {@code null} if not SMIL.
+   *
+   * <p>Some IPTV servers respond to DESCRIBE with SMIL instead of SDP. We detect the case and
+   * re-issue DESCRIBE against the real stream URI extracted from {@code <video src>}/{@code <ref
+   * src>}. Detection uses the {@code Content-Type} header when present, with body-sniffing as
+   * fallback for servers that omit it.
+   */
+  @Nullable
+  private static Uri extractSmilStreamUri(String body, @Nullable String contentType, Uri baseUri) {
+    boolean isSmilByHeader = contentType != null && (contentType.toLowerCase(Locale.US).contains("smil") || contentType.toLowerCase(Locale.US).contains("/xml"));
+    if (!isSmilByHeader) {
+      String trimmed = body.trim();
+      if (!trimmed.startsWith("<?xml") && !trimmed.regionMatches(true, 0, "<smil", 0, 5)) {
+        return null;
+      }
+    }
+    Matcher matcher = SMIL_SRC_PATTERN.matcher(body.trim());
+    if (!matcher.find()) {
+      return null;
+    }
+    String src = matcher.group(1);
+    if (src == null || src.isEmpty()) {
+      return null;
+    }
+    if (src.contains("://")) {
+      return Uri.parse(src);
+    }
+    try {
+      return Uri.parse(new URI(baseUri.toString()).resolve(src).toString());
+    } catch (Exception e) {
+      String base = baseUri.toString();
+      int lastSlash = base.lastIndexOf('/');
+      String resolved = lastSlash >= 0 ? base.substring(0, lastSlash + 1) + src : base + "/" + src;
+      return Uri.parse(resolved);
+    }
+  }
+
   private final class MessageSender {
 
     private int cSeq;
@@ -405,13 +474,14 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     public void sendPlayRequest(Uri uri, long offsetMs, String sessionId) {
       checkState(rtspState == RTSP_STATE_READY || rtspState == RTSP_STATE_PLAYING);
-      sendRequest(
-          getRequestWithCommonHeaders(
-              METHOD_PLAY,
-              sessionId,
-              /* additionalHeaders= */ ImmutableMap.of(
-                  RtspHeaders.RANGE, RtspSessionTiming.getOffsetStartTimeTiming(offsetMs)),
-              uri));
+      String rangeHeader;
+      if (clockRangeStartEpochMs != C.TIME_UNSET && clockRangeEndEpochMs != C.TIME_UNSET) {
+        rangeHeader = "clock=" + RtspSessionTiming.formatClockTimeMs(clockRangeStartEpochMs + offsetMs) + "-" + RtspSessionTiming.formatClockTimeMs(clockRangeEndEpochMs);
+        sendRequest(getRequestWithCommonHeaders(METHOD_PLAY, sessionId, ImmutableMap.of(RtspHeaders.RANGE, rangeHeader, RtspHeaders.SCALE, "1.000000"), uri));
+      } else {
+        rangeHeader = overrideRange != null ? overrideRange : RtspSessionTiming.getOffsetStartTimeTiming(offsetMs);
+        sendRequest(getRequestWithCommonHeaders(METHOD_PLAY, sessionId, ImmutableMap.of(RtspHeaders.RANGE, rangeHeader), uri));
+      }
     }
 
     public void sendTeardownRequest(Uri uri, String sessionId) {
@@ -568,6 +638,10 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
             if (rtspState != RTSP_STATE_UNINITIALIZED) {
               rtspState = RTSP_STATE_INIT;
             }
+            if (++redirectCount > MAX_REDIRECT_COUNT) {
+              sessionInfoListener.onSessionTimelineRequestFailed("Too many redirects (" + redirectCount + ").", /* cause= */ null);
+              return;
+            }
             @Nullable String redirectionUriString = response.headers.get(RtspHeaders.LOCATION);
             if (redirectionUriString == null) {
               sessionInfoListener.onSessionTimelineRequestFailed(
@@ -579,7 +653,16 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
               if (redirectRtspAuthUserInfo != null) {
                 RtspClient.this.rtspAuthUserInfo = redirectRtspAuthUserInfo;
               }
-              messageSender.sendDescribeRequest(RtspClient.this.uri, RtspClient.this.sessionId);
+              try {
+                messageChannel.close();
+                messageChannel = new RtspMessageChannel(new MessageListener());
+                messageChannel.open(getSocket(RtspClient.this.uri));
+                sessionId = null;
+                pendingRequests.clear();
+                messageSender.sendOptionsRequest(RtspClient.this.uri, null);
+              } catch (IOException e) {
+                sessionInfoListener.onSessionTimelineRequestFailed("Failed to connect to redirected URI: " + redirectionUriString, e);
+              }
             }
             return;
           case 401:
@@ -640,6 +723,18 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
             break;
 
           case METHOD_DESCRIBE:
+            @Nullable String contentType = response.headers.get(RtspHeaders.CONTENT_TYPE);
+            @Nullable Uri smilStreamUri = extractSmilStreamUri(response.messageBody, contentType, uri);
+            if (smilStreamUri != null) {
+              if (++redirectCount > MAX_REDIRECT_COUNT) {
+                sessionInfoListener.onSessionTimelineRequestFailed("Too many SMIL redirects.", null);
+                return;
+              }
+              RtspClient.this.uri = smilStreamUri;
+              messageSender.sendDescribeRequest(smilStreamUri, sessionId);
+              return;
+            }
+            redirectCount = 0;
             onDescribeResponseReceived(
                 new RtspDescribeResponse(
                     response.headers,
@@ -731,6 +826,15 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
         } catch (ParserException e) {
           sessionInfoListener.onSessionTimelineRequestFailed("SDP format error.", /* cause= */ e);
           return;
+        }
+      }
+      if (sessionTiming.isLive() && overrideRange != null) {
+        try {
+          RtspSessionTiming overrideTiming = RtspSessionTiming.parseTiming(overrideRange);
+          if (!overrideTiming.isLive()) {
+            sessionTiming = overrideTiming;
+          }
+        } catch (ParserException ignored) {
         }
       }
 

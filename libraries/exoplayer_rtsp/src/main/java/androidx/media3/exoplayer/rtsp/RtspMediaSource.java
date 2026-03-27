@@ -20,6 +20,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.net.Uri;
+import android.os.Bundle;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.IntRange;
 import androidx.annotation.Nullable;
@@ -27,6 +28,7 @@ import androidx.annotation.VisibleForTesting;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaLibraryInfo;
+import androidx.media3.common.ParserException;
 import androidx.media3.common.Timeline;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
@@ -54,7 +56,7 @@ public final class RtspMediaSource extends BaseMediaSource {
   }
 
   /** The default value for {@link Factory#setTimeoutMs}. */
-  public static final long DEFAULT_TIMEOUT_MS = 8000;
+  public static final long DEFAULT_TIMEOUT_MS = 5000;
 
   /**
    * Factory for {@link RtspMediaSource}
@@ -181,6 +183,8 @@ public final class RtspMediaSource extends BaseMediaSource {
     @Override
     public RtspMediaSource createMediaSource(MediaItem mediaItem) {
       checkNotNull(mediaItem.localConfiguration);
+      @Nullable Bundle extras = mediaItem.requestMetadata.extras;
+      @Nullable String overrideRange = extras != null ? extras.getString("rtsp_range") : null;
       return new RtspMediaSource(
           mediaItem,
           shouldForceUseRtpTcp(mediaItem)
@@ -188,7 +192,8 @@ public final class RtspMediaSource extends BaseMediaSource {
               : new UdpDataSourceRtpDataChannelFactory(timeoutMs),
           userAgent,
           socketFactory,
-          debugLoggingEnabled);
+          debugLoggingEnabled,
+          overrideRange);
     }
 
     private boolean shouldForceUseRtpTcp(MediaItem mediaItem) {
@@ -227,6 +232,7 @@ public final class RtspMediaSource extends BaseMediaSource {
   private final Uri uri;
   private final SocketFactory socketFactory;
   private final boolean debugLoggingEnabled;
+  @Nullable private final String overrideRange;
 
   private long timelineDurationUs;
   private boolean timelineIsSeekable;
@@ -243,12 +249,29 @@ public final class RtspMediaSource extends BaseMediaSource {
       String userAgent,
       SocketFactory socketFactory,
       boolean debugLoggingEnabled) {
+    this(
+        mediaItem,
+        rtpDataChannelFactory,
+        userAgent,
+        socketFactory,
+        debugLoggingEnabled,
+        /* overrideRange= */ null);
+  }
+
+  private RtspMediaSource(
+      MediaItem mediaItem,
+      RtpDataChannel.Factory rtpDataChannelFactory,
+      String userAgent,
+      SocketFactory socketFactory,
+      boolean debugLoggingEnabled,
+      @Nullable String overrideRange) {
     this.mediaItem = mediaItem;
     this.rtpDataChannelFactory = rtpDataChannelFactory;
     this.userAgent = userAgent;
     this.uri = maybeConvertRtsptUriScheme(checkNotNull(mediaItem.localConfiguration).uri);
     this.socketFactory = socketFactory;
     this.debugLoggingEnabled = debugLoggingEnabled;
+    this.overrideRange = overrideRange;
     this.timelineDurationUs = C.TIME_UNSET;
     this.timelineIsPlaceholder = true;
   }
@@ -294,22 +317,34 @@ public final class RtspMediaSource extends BaseMediaSource {
         new RtspMediaPeriod.Listener() {
           @Override
           public void onSourceInfoRefreshed(RtspSessionTiming timing) {
-            timelineDurationUs = Util.msToUs(timing.getDurationMs());
-            timelineIsSeekable = !timing.isLive();
-            timelineIsLive = timing.isLive();
+            RtspSessionTiming effectiveTiming = timing;
+            if (timing.isLive() && overrideRange != null) {
+              try {
+                RtspSessionTiming overrideTiming = RtspSessionTiming.parseTiming(overrideRange);
+                if (!overrideTiming.isLive()) {
+                  effectiveTiming = overrideTiming;
+                }
+              } catch (ParserException ignored) {
+              }
+            }
+            timelineDurationUs = Util.msToUs(effectiveTiming.getDurationMs());
+            timelineIsSeekable = !effectiveTiming.isLive();
+            timelineIsLive = effectiveTiming.isLive();
             timelineIsPlaceholder = false;
             notifySourceInfoRefreshed();
           }
 
           @Override
           public void onSeekingUnsupported() {
-            timelineIsSeekable = false;
-            notifySourceInfoRefreshed();
+            if (!timelineIsSeekable) {
+              notifySourceInfoRefreshed();
+            }
           }
         },
         userAgent,
         socketFactory,
-        debugLoggingEnabled);
+        debugLoggingEnabled,
+        overrideRange);
   }
 
   @Override

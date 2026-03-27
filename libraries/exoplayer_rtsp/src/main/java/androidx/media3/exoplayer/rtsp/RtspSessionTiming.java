@@ -22,6 +22,9 @@ import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.ParserException;
 import androidx.media3.common.util.Util;
+import java.util.Calendar;
+import java.util.GregorianCalendar;
+import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,12 +42,67 @@ import java.util.regex.Pattern;
   // Supports both npt= and npt: identifier.
   private static final Pattern NPT_RANGE_PATTERN =
       Pattern.compile("npt[:=]([.\\d]+|now)\\s?-\\s?([.\\d]+)?");
+  static final Pattern CLOCK_RANGE_PATTERN =
+      Pattern.compile("clock=([\\dT]+Z)-([\\dT]+Z)?");
+  private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
   private static final String START_TIMING_NTP_FORMAT = "npt=%.3f-";
 
   private static final long LIVE_START_TIME = 0;
 
+  static long parseClockTimeMs(String s) throws ParserException {
+    if (s.length() != 16 || s.charAt(8) != 'T' || s.charAt(15) != 'Z') {
+      throw ParserException.createForMalformedManifest("Invalid clock timestamp: " + s, null);
+    }
+    try {
+      Calendar cal = new GregorianCalendar(UTC);
+      cal.clear();
+      cal.set(
+          Integer.parseInt(s.substring(0, 4)),
+          Integer.parseInt(s.substring(4, 6)) - 1,
+          Integer.parseInt(s.substring(6, 8)),
+          Integer.parseInt(s.substring(9, 11)),
+          Integer.parseInt(s.substring(11, 13)),
+          Integer.parseInt(s.substring(13, 15)));
+      return cal.getTimeInMillis();
+    } catch (NumberFormatException e) {
+      throw ParserException.createForMalformedManifest("Invalid clock timestamp: " + s, e);
+    }
+  }
+
+  static String formatClockTimeMs(long epochMs) {
+    Calendar cal = new GregorianCalendar(UTC);
+    cal.setTimeInMillis(epochMs);
+    return Util.formatInvariant(
+        "%04d%02d%02dT%02d%02d%02dZ",
+        cal.get(Calendar.YEAR),
+        cal.get(Calendar.MONTH) + 1,
+        cal.get(Calendar.DAY_OF_MONTH),
+        cal.get(Calendar.HOUR_OF_DAY),
+        cal.get(Calendar.MINUTE),
+        cal.get(Calendar.SECOND));
+  }
+
   /** Parses an SDP range attribute (RFC2326 Section 3.6). */
   public static RtspSessionTiming parseTiming(String sdpRangeAttribute) throws ParserException {
+    if (sdpRangeAttribute.startsWith("clock=")) {
+      Matcher clockMatcher = CLOCK_RANGE_PATTERN.matcher(sdpRangeAttribute);
+      if (clockMatcher.matches()) {
+        @Nullable String startStr = clockMatcher.group(1);
+        @Nullable String stopStr = clockMatcher.group(2);
+        if (startStr != null && stopStr != null) {
+          try {
+            long startEpochMs = parseClockTimeMs(startStr);
+            long stopEpochMs = parseClockTimeMs(stopStr);
+            long durationMs = stopEpochMs - startEpochMs;
+            if (durationMs > 0) {
+              return new RtspSessionTiming(0, durationMs);
+            }
+          } catch (ParserException ignored) {
+          }
+        }
+      }
+      return DEFAULT;
+    }
     long startTimeMs;
     long stopTimeMs;
     Matcher matcher = NPT_RANGE_PATTERN.matcher(sdpRangeAttribute);

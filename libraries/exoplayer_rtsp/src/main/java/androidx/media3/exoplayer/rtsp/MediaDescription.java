@@ -117,6 +117,7 @@ import java.util.Objects;
     private static final int RTP_STATIC_PAYLOAD_TYPE_PCMA = 8;
     private static final int RTP_STATIC_PAYLOAD_TYPE_L16_STEREO = 10;
     private static final int RTP_STATIC_PAYLOAD_TYPE_L16_MONO = 11;
+    private static final int RTP_STATIC_PAYLOAD_TYPE_MP2T = 33;
 
     private final String mediaType;
     private final int port;
@@ -256,8 +257,10 @@ import java.util.Objects;
               /* mediaEncoding= */ "L16",
               /* clockRate= */ 44_100,
               /* channelCount= */ 1);
+        case RTP_STATIC_PAYLOAD_TYPE_MP2T:
+          return Util.formatInvariant("%d MP2T/90000", RTP_STATIC_PAYLOAD_TYPE_MP2T);
         default:
-          throw new IllegalStateException("Unsupported static paylod type " + rtpPayloadType);
+          throw new IllegalStateException("Unsupported static payload type " + rtpPayloadType);
       }
     }
 

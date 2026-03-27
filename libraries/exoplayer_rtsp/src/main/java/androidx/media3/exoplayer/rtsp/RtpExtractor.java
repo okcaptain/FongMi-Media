@@ -36,11 +36,16 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 /** Extracts data from RTP packets. */
 /* package */ final class RtpExtractor implements Extractor {
 
+  private static final int VIDEO_RTP_CLOCK_RATE = 90_000;
+  private static final long VIDEO_REORDER_TIMEOUT_MS = 33;
+  private static final long AUDIO_REORDER_TIMEOUT_MS = 20;
+
   private final RtpPayloadReader payloadReader;
   private final ParsableByteArray rtpPacketScratchBuffer;
   private final ParsableByteArray rtpPacketDataBuffer;
   private final int trackId;
   private final Object lock;
+  private final long reorderTimeoutMs;
   private final RtpPacketReorderingQueue reorderingQueue;
 
   private @MonotonicNonNull ExtractorOutput output;
@@ -66,6 +71,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     rtpPacketDataBuffer = new ParsableByteArray();
     lock = new Object();
     reorderingQueue = new RtpPacketReorderingQueue();
+    reorderTimeoutMs = payloadFormat.clockRate == VIDEO_RTP_CLOCK_RATE ? VIDEO_REORDER_TIMEOUT_MS : AUDIO_REORDER_TIMEOUT_MS;
     firstTimestamp = C.TIME_UNSET;
     firstSequenceNumber = C.INDEX_UNSET;
     nextRtpTimestamp = C.TIME_UNSET;
@@ -208,9 +214,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
    * <p>Returns the cutoff time to pass to {@link RtpPacketReorderingQueue#poll(long)} based on the
    * given RtpPacket arrival time.
    */
-  private static long getCutoffTimeMs(long packetArrivalTimeMs) {
-    // TODO(internal b/172331505) 30ms is roughly the time for one video frame. It is not rigorously
-    // chosen and will need fine tuning in the future.
-    return packetArrivalTimeMs - 30;
+  private long getCutoffTimeMs(long packetArrivalTimeMs) {
+    return packetArrivalTimeMs - reorderTimeoutMs;
   }
 }

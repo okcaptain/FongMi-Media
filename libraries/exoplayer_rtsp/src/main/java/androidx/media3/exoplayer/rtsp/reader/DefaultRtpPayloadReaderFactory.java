@@ -60,6 +60,8 @@ public final class DefaultRtpPayloadReaderFactory implements RtpPayloadReader.Fa
         return new RtpVp8Reader(payloadFormat);
       case MimeTypes.VIDEO_VP9:
         return new RtpVp9Reader(payloadFormat);
+      case MimeTypes.VIDEO_MP2T:
+        return new RtpMp2tReader();
       default:
         // No supported reader, returning null.
     }

@@ -92,12 +92,17 @@ import java.util.regex.Pattern;
       Matcher matcher = SDP_LINE_PATTERN.matcher(line);
       if (!matcher.matches()) {
         Matcher sdpTagMatcher = SDP_LINE_WITH_EMPTY_VALUE_PATTERN.matcher(line);
-        if (sdpTagMatcher.matches() && Objects.equals(sdpTagMatcher.group(1), INFORMATION_TYPE)) {
-          // Allow and skip empty Session Information (tag 'i') attributes
-          continue;
+        if (sdpTagMatcher.matches()) {
+          String emptyTag = sdpTagMatcher.group(1);
+          if (Objects.equals(emptyTag, INFORMATION_TYPE)) {
+            continue;
+          }
+          if (Objects.equals(emptyTag, SESSION_TYPE)) {
+            sessionDescriptionBuilder.setSessionName("-");
+            continue;
+          }
         }
-        throw ParserException.createForMalformedManifest(
-            "Malformed SDP line: " + line, /* cause= */ null);
+        continue;
       }
 
       String sdpType = checkNotNull(matcher.group(1));
@@ -257,7 +262,7 @@ import java.util.regex.Pattern;
   private static MediaDescription.Builder parseMediaDescriptionLine(String line)
       throws ParserException {
     Matcher matcher = MEDIA_DESCRIPTION_PATTERN.matcher(line);
-    if (!matcher.matches()) {
+    if (!matcher.find()) {
       throw ParserException.createForMalformedManifest(
           "Malformed SDP media description line: " + line, /* cause= */ null);
     }
