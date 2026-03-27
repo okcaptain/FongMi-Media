@@ -63,3 +63,19 @@ task printReleaseArtifactIds {
         }
     }
 }
+
+tasks.register('assembleLibs') {
+    group = 'build'
+    description = 'Assembles release AARs for all lib- modules'
+    subprojects.each { subproject ->
+        if (subproject.name.startsWith('lib-')) {
+            dependsOn "${subproject.path}:assembleRelease"
+        }
+    }
+    doLast {
+        exec {
+            commandLine 'cmd', '/c', 'move.bat'
+            workingDir rootDir
+        }
+    }
+}

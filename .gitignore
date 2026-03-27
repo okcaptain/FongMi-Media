@@ -4,6 +4,8 @@ gen
 libs
 obj
 .kotlin
+.vscode
+.github
 
 # IntelliJ IDEA
 .idea
