@@ -22,7 +22,7 @@ import androidx.media3.common.ParserException;
 import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.extractor.AacUtil;
 import androidx.media3.extractor.TrackOutput;
-import java.util.Collections;
+import com.google.common.collect.ImmutableList;
 
 /** Parses audio tags from an FLV stream and extracts AAC frames. */
 /* package */ final class AudioTagPayloadReader extends TagPayloadReader {
@@ -35,7 +35,7 @@ import java.util.Collections;
   private static final int AAC_PACKET_TYPE_SEQUENCE_HEADER = 0;
   private static final int AAC_PACKET_TYPE_AAC_RAW = 1;
 
-  private static final int[] AUDIO_SAMPLING_RATE_TABLE = new int[] {5512, 11025, 22050, 44100};
+  private static final int[] AUDIO_SAMPLING_RATE_TABLE = new int[]{5512, 11025, 22050, 44100};
 
   // State variables
   private boolean hasParsedAudioDataHeader;
@@ -59,11 +59,12 @@ import java.util.Collections;
       if (audioFormat == AUDIO_FORMAT_MP3) {
         int sampleRateIndex = (header >> 2) & 0x03;
         int sampleRate = AUDIO_SAMPLING_RATE_TABLE[sampleRateIndex];
+        int channelCount = (header & 0x01) == 1 ? 2 : 1;
         Format format =
             new Format.Builder()
                 .setContainerMimeType(MimeTypes.VIDEO_FLV)
                 .setSampleMimeType(MimeTypes.AUDIO_MPEG)
-                .setChannelCount(1)
+                .setChannelCount(channelCount)
                 .setSampleRate(sampleRate)
                 .build();
         output.format(format);
@@ -93,38 +94,36 @@ import java.util.Collections;
 
   @Override
   protected boolean parsePayload(ParsableByteArray data, long timeUs) throws ParserException {
-    if (audioFormat == AUDIO_FORMAT_MP3) {
+    if (audioFormat != AUDIO_FORMAT_AAC) {
+      int sampleSize = data.bytesLeft();
+      output.sampleData(data, sampleSize);
+      output.sampleMetadata(timeUs, C.BUFFER_FLAG_KEY_FRAME, sampleSize, 0, null);
+      return true;
+    }
+    int packetType = data.readUnsignedByte();
+    if (packetType == AAC_PACKET_TYPE_SEQUENCE_HEADER && !hasOutputFormat) {
+      byte[] audioSpecificConfig = new byte[data.bytesLeft()];
+      data.readBytes(audioSpecificConfig, 0, audioSpecificConfig.length);
+      AacUtil.Config aacConfig = AacUtil.parseAudioSpecificConfig(audioSpecificConfig);
+      Format format =
+          new Format.Builder()
+              .setContainerMimeType(MimeTypes.VIDEO_FLV)
+              .setSampleMimeType(MimeTypes.AUDIO_AAC)
+              .setCodecs(aacConfig.codecs)
+              .setChannelCount(aacConfig.channelCount)
+              .setSampleRate(aacConfig.sampleRateHz)
+              .setInitializationData(ImmutableList.of(audioSpecificConfig))
+              .build();
+      output.format(format);
+      hasOutputFormat = true;
+      return false;
+    } else if (packetType == AAC_PACKET_TYPE_AAC_RAW) {
       int sampleSize = data.bytesLeft();
       output.sampleData(data, sampleSize);
       output.sampleMetadata(timeUs, C.BUFFER_FLAG_KEY_FRAME, sampleSize, 0, null);
       return true;
     } else {
-      int packetType = data.readUnsignedByte();
-      if (packetType == AAC_PACKET_TYPE_SEQUENCE_HEADER && !hasOutputFormat) {
-        // Parse the sequence header.
-        byte[] audioSpecificConfig = new byte[data.bytesLeft()];
-        data.readBytes(audioSpecificConfig, 0, audioSpecificConfig.length);
-        AacUtil.Config aacConfig = AacUtil.parseAudioSpecificConfig(audioSpecificConfig);
-        Format format =
-            new Format.Builder()
-                .setContainerMimeType(MimeTypes.VIDEO_FLV)
-                .setSampleMimeType(MimeTypes.AUDIO_AAC)
-                .setCodecs(aacConfig.codecs)
-                .setChannelCount(aacConfig.channelCount)
-                .setSampleRate(aacConfig.sampleRateHz)
-                .setInitializationData(Collections.singletonList(audioSpecificConfig))
-                .build();
-        output.format(format);
-        hasOutputFormat = true;
-        return false;
-      } else if (audioFormat != AUDIO_FORMAT_AAC || packetType == AAC_PACKET_TYPE_AAC_RAW) {
-        int sampleSize = data.bytesLeft();
-        output.sampleData(data, sampleSize);
-        output.sampleMetadata(timeUs, C.BUFFER_FLAG_KEY_FRAME, sampleSize, 0, null);
-        return true;
-      } else {
-        return false;
-      }
+      return false;
     }
   }
 }
