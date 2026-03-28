@@ -85,6 +85,12 @@ public final class PesReader implements TsPayloadReader {
     reader.seek();
   }
 
+  public void enableRandomAccessIndicator(long seekTimeUs) {
+    if (reader instanceof H264Reader) {
+      ((H264Reader) reader).enableRandomAccessIndicator(seekTimeUs);
+    }
+  }
+
   @Override
   public void consume(ParsableByteArray data, @Flags int flags) throws ParserException {
     // Asserts init has been called.

@@ -73,6 +73,7 @@ public final class MimeTypes {
   public static final String VIDEO_RV20 = BASE_TYPE_VIDEO + "/x-rv20";
   public static final String VIDEO_RV30 = BASE_TYPE_VIDEO + "/x-rv30";
   public static final String VIDEO_RV40 = BASE_TYPE_VIDEO + "/x-rv40";
+  public static final String VIDEO_ISO = BASE_TYPE_VIDEO + "/x-iso";
   @UnstableApi public static final String VIDEO_MV_HEVC = BASE_TYPE_VIDEO + "/mv-hevc";
   @UnstableApi public static final String VIDEO_RAW = BASE_TYPE_VIDEO + "/raw";
   @UnstableApi public static final String VIDEO_UNKNOWN = BASE_TYPE_VIDEO + "/x-unknown";
@@ -96,11 +97,12 @@ public final class MimeTypes {
   public static final String AUDIO_E_AC3_JOC = BASE_TYPE_AUDIO + "/eac3-joc";
   public static final String AUDIO_AC4 = BASE_TYPE_AUDIO + "/ac4";
   public static final String AUDIO_TRUEHD = BASE_TYPE_AUDIO + "/true-hd";
-  @UnstableApi public static final String AUDIO_DSD = BASE_TYPE_AUDIO + "/dsd";
   public static final String AUDIO_DTS = BASE_TYPE_AUDIO + "/vnd.dts";
   public static final String AUDIO_DTS_HD = BASE_TYPE_AUDIO + "/vnd.dts.hd";
   public static final String AUDIO_DTS_EXPRESS = BASE_TYPE_AUDIO + "/vnd.dts.hd;profile=lbr";
   @UnstableApi public static final String AUDIO_DTS_X = BASE_TYPE_AUDIO + "/vnd.dts.uhd;profile=p2";
+  public static final String AUDIO_DSD = BASE_TYPE_AUDIO + "/vnd.dsd";
+  public static final String AUDIO_DST = BASE_TYPE_AUDIO + "/vnd.dst";
   public static final String AUDIO_VORBIS = BASE_TYPE_AUDIO + "/vorbis";
   public static final String AUDIO_OPUS = BASE_TYPE_AUDIO + "/opus";
   public static final String AUDIO_AMR = BASE_TYPE_AUDIO + "/amr";

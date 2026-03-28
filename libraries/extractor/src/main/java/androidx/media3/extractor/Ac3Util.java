@@ -132,6 +132,12 @@ public final class Ac3Util {
    */
   public static final int TRUEHD_SYNCFRAME_PREFIX_LENGTH = 10;
 
+  /**
+   * The minimum number of bytes needed from the start of a TrueHD syncframe to detect Dolby Atmos.
+   * Covers bytes 0–21: frame header (4) + sync word (4) + audio params (14).
+   */
+  public static final int TRUEHD_SYNCFRAME_HEADER_SIZE = 22;
+
   /** The number of new samples per (E-)AC-3 audio block. */
   private static final int AUDIO_SAMPLES_PER_AUDIO_BLOCK = 256;
 
@@ -371,49 +377,7 @@ public final class Ac3Util {
             data.skipBits(12); // mixdata
           } else if (mixdef == 3) {
             int mixdeflen = data.readBits(5);
-            if (data.readBit()) { // mixdata2e
-              data.skipBits(1 + 1 + 3); // premixcmpsel, drcsrc, premixcmpscl
-              if (data.readBit()) { // extpgmlscle
-                data.skipBits(4); // extpgmlscl
-              }
-              if (data.readBit()) { // extpgmcscle
-                data.skipBits(4); // extpgmcscl
-              }
-              if (data.readBit()) { // extpgmrscle
-                data.skipBits(4); // extpgmrscl
-              }
-              if (data.readBit()) { // extpgmlsscle
-                data.skipBits(4); // extpgmlsscl
-              }
-              if (data.readBit()) { // extpgmrsscle
-                data.skipBits(4); // extpgmrsscl
-              }
-              if (data.readBit()) { // extpgmlfescle
-                data.skipBits(4); // extpgmlfescl
-              }
-              if (data.readBit()) { // dmixscle
-                data.skipBits(4); // dmixscl
-              }
-              if (data.readBit()) { // addche
-                if (data.readBit()) { // extpgmaux1scle
-                  data.skipBits(4); // extpgmaux1scl
-                }
-                if (data.readBit()) { // extpgmaux2scle
-                  data.skipBits(4); // extpgmaux2scl
-                }
-              }
-            }
-            if (data.readBit()) { // mixdata3e
-              data.skipBits(5); // spchdat
-              if (data.readBit()) { // addspchdate
-                data.skipBits(5 + 2); // spchdat1, spchan1att
-                if (data.readBit()) { // addspdat1e
-                  data.skipBits(5 + 3); // spchdat2, spchan2att
-                }
-              }
-            }
             data.skipBits(8 * (mixdeflen + 2)); // mixdata
-            data.byteAlign(); // mixdatafill
           }
           if (acmod < 2) {
             if (data.readBit()) { // paninfoe
@@ -466,7 +430,7 @@ public final class Ac3Util {
       mimeType = MimeTypes.AUDIO_E_AC3;
       if (data.readBit()) { // addbsie
         int addbsil = data.readBits(6);
-        if (addbsil == 1 && data.readBits(8) == 1) { // addbsi
+        if (addbsil == 1 && data.readBits(8) == 1) {
           mimeType = MimeTypes.AUDIO_E_AC3_JOC;
         }
       }
@@ -480,7 +444,11 @@ public final class Ac3Util {
         mimeType = null;
       }
       int frmsizecod = data.readBits(6);
-      bitrate = BITRATE_BY_HALF_FRMSIZECOD[frmsizecod / 2] * 1000;
+      int halfFrmsizecod = frmsizecod / 2;
+      if (halfFrmsizecod >= BITRATE_BY_HALF_FRMSIZECOD.length) {
+        return new SyncFrameInfo(null, SyncFrameInfo.STREAM_TYPE_UNDEFINED, 0, Format.NO_VALUE, C.LENGTH_UNSET, 0, 0);
+      }
+      bitrate = BITRATE_BY_HALF_FRMSIZECOD[halfFrmsizecod] * 1000;
       frameSize = getAc3SyncframeSize(fscod, frmsizecod);
       data.skipBits(5 + 3); // bsid, bsmod
       acmod = data.readBits(3);
@@ -599,6 +567,22 @@ public final class Ac3Util {
     // TODO: Link to specification if available.
     boolean isMlp = (buffer.get(buffer.position() + offset + 7) & 0xFF) == 0xBB;
     return 40 << ((buffer.get(buffer.position() + offset + (isMlp ? 9 : 8)) >> 4) & 0x07);
+  }
+
+  /**
+   * Returns whether a TrueHD syncframe header contains a Dolby Atmos presentation.
+   *
+   * <p>Uses the same condition as FFmpeg mlpdec.c: {@code num_substreams == 4} and the MSB of
+   * {@code substream_info} is set.
+   *
+   * @param header Byte array containing the syncframe. Must be at least {@link
+   *     #TRUEHD_SYNCFRAME_HEADER_SIZE} bytes long.
+   * @return {@code true} if this syncframe carries a Dolby Atmos presentation.
+   */
+  public static boolean isTrueHdAtmos(byte[] header) {
+    int numSubstreams = (header[20] & 0xFF) >> 4;
+    boolean substreamInfoMsbSet = (header[21] & 0x80) != 0;
+    return numSubstreams == 4 && substreamInfoMsbSet;
   }
 
   private static int getAc3SyncframeSize(int fscod, int frmsizecod) {

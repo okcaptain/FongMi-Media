@@ -47,6 +47,7 @@ public final class DtsReader implements ElementaryStreamReader {
   private static final int STATE_FINDING_UHD_HEADER_SIZE = 4;
   private static final int STATE_READING_UHD_HEADER = 5;
   private static final int STATE_READING_SAMPLE = 6;
+  private static final int STATE_CHECKING_FOR_EXTSS_AFTER_CORE = 7;
 
   /** Size of core header, in bytes. */
   private static final int CORE_HEADER_SIZE = 18;
@@ -63,6 +64,7 @@ public final class DtsReader implements ElementaryStreamReader {
    */
   /* package */ static final int FTOC_MAX_HEADER_SIZE = 5408;
 
+  private final byte[] corePostSyncCheck = new byte[4];
   private final ParsableByteArray headerScratchBytes;
 
   /** The chunk ID is read in synchronized frames and re-used in non-synchronized frames. */
@@ -88,9 +90,15 @@ public final class DtsReader implements ElementaryStreamReader {
   private @DtsUtil.FrameType int frameType;
   private int extensionSubstreamHeaderSize;
   private int uhdHeaderSize;
+  private int coreSampleRate;
 
   // Used when reading the samples.
   private long timeUs;
+  private int pendingCoreSampleSize;
+  private int corePostSyncCheckCount;
+  private boolean skipExtssUntilCore;
+  private boolean combiningCoreAndExss;
+  private boolean coreFormatPendingEmit;
 
   /**
    * Constructs a new reader for DTS elementary streams.
@@ -123,6 +131,11 @@ public final class DtsReader implements ElementaryStreamReader {
     syncBytes = 0;
     timeUs = C.TIME_UNSET;
     uhdAudioChunkId.set(0);
+    pendingCoreSampleSize = 0;
+    corePostSyncCheckCount = 0;
+    combiningCoreAndExss = false;
+    coreFormatPendingEmit = false;
+    skipExtssUntilCore = (coreSampleRate != 0);
   }
 
   @Override
@@ -134,7 +147,9 @@ public final class DtsReader implements ElementaryStreamReader {
 
   @Override
   public void packetStarted(long pesTimeUs, @TsPayloadReader.Flags int flags) {
-    timeUs = pesTimeUs;
+    if (pesTimeUs != C.TIME_UNSET) {
+      timeUs = pesTimeUs;
+    }
   }
 
   @Override
@@ -145,13 +160,13 @@ public final class DtsReader implements ElementaryStreamReader {
       switch (state) {
         case STATE_FINDING_SYNC:
           if (skipToNextSyncWord(data)) {
-            if (frameType == DtsUtil.FRAME_TYPE_UHD_SYNC
-                || frameType == DtsUtil.FRAME_TYPE_UHD_NON_SYNC) {
-              state = STATE_FINDING_UHD_HEADER_SIZE;
-            } else if (frameType == DtsUtil.FRAME_TYPE_CORE) {
-              state = STATE_READING_CORE_HEADER;
+            if (skipExtssUntilCore && frameType == DtsUtil.FRAME_TYPE_EXTENSION_SUBSTREAM) {
+              bytesRead = 0;
             } else {
-              state = STATE_FINDING_EXTSS_HEADER_SIZE;
+              if (frameType == DtsUtil.FRAME_TYPE_CORE) {
+                skipExtssUntilCore = false;
+              }
+              state = stateForFrameType(frameType);
             }
           }
           break;
@@ -173,7 +188,11 @@ public final class DtsReader implements ElementaryStreamReader {
           break;
         case STATE_READING_EXTSS_HEADER:
           if (continueRead(data, headerScratchBytes.getData(), extensionSubstreamHeaderSize)) {
-            parseExtensionSubstreamHeader();
+            if (combiningCoreAndExss) {
+              parseCombinedCoreExssHeader();
+            } else {
+              parseExtensionSubstreamHeader();
+            }
             headerScratchBytes.setPosition(0);
             output.sampleData(headerScratchBytes, extensionSubstreamHeaderSize);
             state = STATE_READING_SAMPLE;
@@ -205,16 +224,36 @@ public final class DtsReader implements ElementaryStreamReader {
           output.sampleData(data, bytesToRead);
           bytesRead += bytesToRead;
           if (bytesRead == sampleSize) {
-            // packetStarted method must be called before consuming samples.
-            checkState(timeUs != C.TIME_UNSET);
-            output.sampleMetadata(
-                timeUs,
-                frameType == DtsUtil.FRAME_TYPE_UHD_NON_SYNC ? 0 : C.BUFFER_FLAG_KEY_FRAME,
-                sampleSize,
-                0,
-                null);
-            timeUs += sampleDurationUs;
-            state = STATE_FINDING_SYNC;
+            if (frameType == DtsUtil.FRAME_TYPE_CORE) {
+              pendingCoreSampleSize = sampleSize;
+              combiningCoreAndExss = false;
+              corePostSyncCheckCount = 0;
+              bytesRead = 0;
+              state = STATE_CHECKING_FOR_EXTSS_AFTER_CORE;
+            } else {
+              int sampleFlags = frameType == DtsUtil.FRAME_TYPE_UHD_NON_SYNC ? 0 : C.BUFFER_FLAG_KEY_FRAME;
+              emitSample(sampleFlags);
+              pendingCoreSampleSize = 0;
+              combiningCoreAndExss = false;
+              state = STATE_FINDING_SYNC;
+            }
+          }
+          break;
+        case STATE_CHECKING_FOR_EXTSS_AFTER_CORE:
+          while (corePostSyncCheckCount < 4 && data.bytesLeft() > 0) {
+            corePostSyncCheck[corePostSyncCheckCount++] = (byte) data.readUnsignedByte();
+          }
+          if (corePostSyncCheckCount == 4) {
+            int peekedSyncWord = DtsUtil.readSyncWord(corePostSyncCheck);
+            if (DtsUtil.getFrameType(peekedSyncWord) == DtsUtil.FRAME_TYPE_EXTENSION_SUBSTREAM) {
+              combiningCoreAndExss = true;
+              System.arraycopy(corePostSyncCheck, 0, headerScratchBytes.getData(), 0, 4);
+              bytesRead = 4;
+              frameType = DtsUtil.FRAME_TYPE_EXTENSION_SUBSTREAM;
+              state = STATE_FINDING_EXTSS_HEADER_SIZE;
+            } else {
+              emitPendingCoreOnlySample();
+            }
           }
           break;
         default:
@@ -225,7 +264,24 @@ public final class DtsReader implements ElementaryStreamReader {
 
   @Override
   public void packetFinished(boolean isEndOfInput) {
-    // Do nothing.
+    if (isEndOfInput && pendingCoreSampleSize > 0) {
+      emitPendingCoreOnlySample();
+    }
+  }
+
+  /**
+   * Sets the {@link TrackOutput} to receive DTS samples, along with a format ID.
+   *
+   * <p>This is an alternative to {@link #createTracks(ExtractorOutput, TrackIdGenerator)}, for use
+   * when the track output is managed externally (e.g. by {@link
+   * androidx.media3.extractor.wav.WavExtractor}).
+   *
+   * @param trackOutput The track output to receive samples.
+   * @param formatId The format identifier.
+   */
+  public void setTrackOutput(TrackOutput trackOutput, String formatId) {
+    this.formatId = formatId;
+    this.output = trackOutput;
   }
 
   /**
@@ -257,17 +313,93 @@ public final class DtsReader implements ElementaryStreamReader {
       syncBytes |= pesBuffer.readUnsignedByte();
       frameType = DtsUtil.getFrameType(syncBytes);
       if (frameType != DtsUtil.FRAME_TYPE_UNKNOWN) {
-        byte[] headerData = headerScratchBytes.getData();
-        headerData[0] = (byte) ((syncBytes >> 24) & 0xFF);
-        headerData[1] = (byte) ((syncBytes >> 16) & 0xFF);
-        headerData[2] = (byte) ((syncBytes >> 8) & 0xFF);
-        headerData[3] = (byte) (syncBytes & 0xFF);
+        writeSyncWordToHeader(syncBytes);
         bytesRead = 4;
         syncBytes = 0;
         return true;
       }
     }
     return false;
+  }
+
+  /** Emits a completed sample using the current {@link #sampleSize}. */
+  @RequiresNonNull("output")
+  private void emitSample(@C.BufferFlags int flags) {
+    emitSample(flags, sampleSize);
+  }
+
+  /** Emits a completed sample with an explicit size, then advances {@link #timeUs}. */
+  @RequiresNonNull("output")
+  private void emitSample(@C.BufferFlags int flags, int size) {
+    checkState(timeUs != C.TIME_UNSET);
+    output.sampleMetadata(timeUs, flags, size, 0, null);
+    timeUs += sampleDurationUs;
+  }
+
+  /** No EXSS follows core: emit the deferred core format if pending, then output the sample. */
+  @RequiresNonNull("output")
+  private void emitPendingCoreOnlySample() {
+    if (coreFormatPendingEmit) {
+      output.format(format);
+      coreFormatPendingEmit = false;
+    }
+    emitSample(C.BUFFER_FLAG_KEY_FRAME, pendingCoreSampleSize);
+    pendingCoreSampleSize = 0;
+    reprocessPeekedBytes();
+  }
+
+  /** EXSS follows core: parse EXSS header, merge sizes, and emit HD format instead of core. */
+  @RequiresNonNull("output")
+  private void parseCombinedCoreExssHeader() throws ParserException {
+    DtsUtil.DtsHeader exssHeader = DtsUtil.parseDtsHdHeader(headerScratchBytes.getData());
+    coreFormatPendingEmit = false;
+    updateFormatWithDtsHeaderInfo(exssHeader);
+    if (exssHeader.frameDurationUs != C.TIME_UNSET) {
+      sampleDurationUs = exssHeader.frameDurationUs;
+    }
+    sampleSize = pendingCoreSampleSize + exssHeader.frameSize;
+    bytesRead = pendingCoreSampleSize + extensionSubstreamHeaderSize;
+  }
+
+  /**
+   * Re-processes the 4 bytes in {@link #corePostSyncCheck} through sync detection, in case they
+   * contain the start of a new frame sync word.
+   */
+  private void reprocessPeekedBytes() {
+    syncBytes = 0;
+    bytesRead = 0;
+    state = STATE_FINDING_SYNC;
+    for (int i = 0; i < 4; i++) {
+      syncBytes = (syncBytes << 8) | (corePostSyncCheck[i] & 0xFF);
+      frameType = DtsUtil.getFrameType(syncBytes);
+      if (frameType != DtsUtil.FRAME_TYPE_UNKNOWN) {
+        writeSyncWordToHeader(syncBytes);
+        bytesRead = 4;
+        syncBytes = 0;
+        state = stateForFrameType(frameType);
+        break;
+      }
+    }
+  }
+
+  /** Writes the 4-byte sync word into the start of {@link #headerScratchBytes}. */
+  private void writeSyncWordToHeader(int syncWord) {
+    byte[] hd = headerScratchBytes.getData();
+    hd[0] = (byte) (syncWord >>> 24);
+    hd[1] = (byte) (syncWord >>> 16);
+    hd[2] = (byte) (syncWord >>> 8);
+    hd[3] = (byte) syncWord;
+  }
+
+  /** Returns the next state to transition to after identifying a sync word's frame type. */
+  private static int stateForFrameType(@DtsUtil.FrameType int frameType) {
+    if (frameType == DtsUtil.FRAME_TYPE_UHD_SYNC || frameType == DtsUtil.FRAME_TYPE_UHD_NON_SYNC) {
+      return STATE_FINDING_UHD_HEADER_SIZE;
+    } else if (frameType == DtsUtil.FRAME_TYPE_CORE) {
+      return STATE_READING_CORE_HEADER;
+    } else {
+      return STATE_FINDING_EXTSS_HEADER_SIZE;
+    }
   }
 
   /** Parses the DTS Core Sub-stream header. */
@@ -277,8 +409,9 @@ public final class DtsReader implements ElementaryStreamReader {
     if (format == null) {
       format =
           DtsUtil.parseDtsFormat(frameData, formatId, language, roleFlags, containerMimeType, null);
-      output.format(format);
+      coreFormatPendingEmit = true;
     }
+    coreSampleRate = format.sampleRate;
     sampleSize = DtsUtil.getDtsFrameSize(frameData);
     // In this class a sample is an access unit (frame in DTS), but the format's sample rate
     // specifies the number of PCM audio samples per second.
@@ -294,7 +427,9 @@ public final class DtsReader implements ElementaryStreamReader {
     DtsUtil.DtsHeader dtsHeader = DtsUtil.parseDtsHdHeader(headerScratchBytes.getData());
     updateFormatWithDtsHeaderInfo(dtsHeader);
     sampleSize = dtsHeader.frameSize;
-    sampleDurationUs = dtsHeader.frameDurationUs == C.TIME_UNSET ? 0 : dtsHeader.frameDurationUs;
+    if (dtsHeader.frameDurationUs != C.TIME_UNSET) {
+      sampleDurationUs = dtsHeader.frameDurationUs;
+    }
   }
 
   /** Parses the UHD frame header. */
@@ -307,7 +442,9 @@ public final class DtsReader implements ElementaryStreamReader {
       updateFormatWithDtsHeaderInfo(dtsHeader);
     }
     sampleSize = dtsHeader.frameSize;
-    sampleDurationUs = dtsHeader.frameDurationUs == C.TIME_UNSET ? 0 : dtsHeader.frameDurationUs;
+    if (dtsHeader.frameDurationUs != C.TIME_UNSET) {
+      sampleDurationUs = dtsHeader.frameDurationUs;
+    }
   }
 
   @RequiresNonNull({"output"})
@@ -320,6 +457,7 @@ public final class DtsReader implements ElementaryStreamReader {
         || dtsHeader.sampleRate != format.sampleRate
         || !Objects.equals(dtsHeader.mimeType, format.sampleMimeType)) {
       Format.Builder formatBuilder = format == null ? new Format.Builder() : format.buildUpon();
+      int resolvedBitrate = dtsHeader.bitrate > 0 ? dtsHeader.bitrate : Format.NO_VALUE;
       format =
           formatBuilder
               .setId(formatId)
@@ -327,6 +465,7 @@ public final class DtsReader implements ElementaryStreamReader {
               .setSampleMimeType(dtsHeader.mimeType)
               .setChannelCount(dtsHeader.channelCount)
               .setSampleRate(dtsHeader.sampleRate)
+              .setAverageBitrate(resolvedBitrate)
               .setLanguage(language)
               .setRoleFlags(roleFlags)
               .build();

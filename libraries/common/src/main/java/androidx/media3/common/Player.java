@@ -45,6 +45,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -900,6 +901,20 @@ public interface Player {
     default void onTracksChanged(Tracks tracks) {}
 
     /**
+     * Called when the value of {@link Player#getCurrentMediaTitles()} changes.
+     *
+     * <p>This is called when a multi-title media source (e.g. a DVD or Blu-ray ISO image) has been
+     * parsed and more than one playable title is available. The app should present a selection UI
+     * and re-prepare the player with the chosen title index.
+     *
+     * <p>{@link #onEvents(Player, Events)} will also be called to report this event along with
+     * other events that happen in the same {@link Looper} message queue iteration.
+     *
+     * @param titles The available titles. Never null, never empty when this callback fires.
+     */
+    default void onMediaTitlesChanged(List<MediaTitle> titles) {}
+
+    /**
      * Called when the value of {@link Player#getMediaMetadata()} changes.
      *
      * <p>This method may be called multiple times in quick succession.
@@ -1612,7 +1627,8 @@ public interface Player {
     EVENT_CUES,
     EVENT_METADATA,
     EVENT_DEVICE_INFO_CHANGED,
-    EVENT_DEVICE_VOLUME_CHANGED
+    EVENT_DEVICE_VOLUME_CHANGED,
+    EVENT_MEDIA_TITLES_CHANGED
   })
   @interface Event {}
 
@@ -1714,6 +1730,9 @@ public interface Player {
 
   /** {@link #getDeviceVolume()} or {@link #isDeviceMuted()} changed. */
   int EVENT_DEVICE_VOLUME_CHANGED = 30;
+
+  /** {@link #getCurrentMediaTitles()} changed. */
+  int EVENT_MEDIA_TITLES_CHANGED = 31;
 
   /**
    * Commands that indicate which method calls are currently permitted on a particular {@code
@@ -2912,6 +2931,16 @@ public interface Player {
    * @see Listener#onTracksChanged(Tracks)
    */
   Tracks getCurrentTracks();
+
+  /**
+   * Returns the available titles for the current media item, or an empty list if the current media
+   * source has only one title or does not support multi-title selection.
+   *
+   * @see Listener#onMediaTitlesChanged(List)
+   */
+  default List<MediaTitle> getCurrentMediaTitles() {
+    return Collections.emptyList();
+  }
 
   /**
    * Returns the parameters constraining the track selection.

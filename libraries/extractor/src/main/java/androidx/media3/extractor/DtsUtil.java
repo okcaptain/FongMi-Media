@@ -85,6 +85,7 @@ public final class DtsUtil {
    *
    * <ul>
    *   <li>{@link MimeTypes#AUDIO_DTS}
+   *   <li>{@link MimeTypes#AUDIO_DTS_HD}
    *   <li>{@link MimeTypes#AUDIO_DTS_EXPRESS}
    *   <li>{@link MimeTypes#AUDIO_DTS_X}
    * </ul>
@@ -92,7 +93,7 @@ public final class DtsUtil {
   @Documented
   @Retention(SOURCE)
   @Target(TYPE_USE)
-  @StringDef({MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_EXPRESS, MimeTypes.AUDIO_DTS_X})
+  @StringDef({MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_DTS_EXPRESS, MimeTypes.AUDIO_DTS_X})
   public @interface DtsAudioMimeType {}
 
   /**
@@ -175,6 +176,8 @@ public final class DtsUtil {
   private static final int SYNC_VALUE_UHD_FTOC_NONSYNC_BE = 0x71C442E8;
   private static final int SYNC_VALUE_UHD_FTOC_NONSYNC_LE = 0xE842C471;
 
+  private static final int DCA_EXSS_LBR = 0x100;
+
   private static final byte FIRST_BYTE_BE = (byte) (SYNC_VALUE_BE >>> 24);
   private static final byte FIRST_BYTE_14B_BE = (byte) (SYNC_VALUE_14B_BE >>> 24);
   private static final byte FIRST_BYTE_LE = (byte) (SYNC_VALUE_LE >>> 24);
@@ -198,14 +201,14 @@ public final class DtsUtil {
   private static final int[] SAMPLE_RATE_BY_SFREQ =
       new int[] {
         -1, 8_000, 16_000, 32_000, -1, -1, 11_025, 22_050, 44_100, -1, -1, 12_000, 24_000, 48_000,
-        -1, -1
+        96_000, 192_000
       };
 
   /** Maps RATE to 2 * bitrate in kbit/s. See ETSI TS 102 114 table 5-7. */
   private static final int[] TWICE_BITRATE_KBPS_BY_RATE =
       new int[] {
         64, 112, 128, 192, 224, 256, 384, 448, 512, 640, 768, 896, 1_024, 1_152, 1_280, 1_536,
-        1_920, 2_048, 2_304, 2_560, 2_688, 2_816, 2_823, 2_944, 3_072, 3_840, 4_096, 6_144, 7_680
+        1_792, 2_048, 2_304, 2_560, 2_688, 2_816, 2_823, 2_944, 3_072, 3_840, 4_096, 6_144, 7_680
       };
 
   /**
@@ -334,19 +337,22 @@ public final class DtsUtil {
    * @return The number of audio samples represented by the syncframe.
    */
   public static int parseDtsAudioSampleCount(ByteBuffer buffer) {
-    if ((buffer.getInt(0) == SYNC_VALUE_UHD_FTOC_SYNC_LE)
-        || (buffer.getInt(0) == SYNC_VALUE_UHD_FTOC_NONSYNC_LE)) {
+    int position = buffer.position();
+    int syncWord = buffer.getInt(position);
+    if (syncWord == SYNC_VALUE_UHD_FTOC_SYNC_BE
+        || syncWord == SYNC_VALUE_UHD_FTOC_SYNC_LE
+        || syncWord == SYNC_VALUE_UHD_FTOC_NONSYNC_BE
+        || syncWord == SYNC_VALUE_UHD_FTOC_NONSYNC_LE) {
       // Check for DTS:X Profile 2 sync or non sync word and return 1024 if found. This is the only
       // audio sample count that is used by DTS:X Streaming Encoder.
       return 1024;
-    } else if (buffer.getInt(0) == SYNC_VALUE_EXTSS_LE) {
-      // Check for DTS Express sync word and return 4096 if found. This is the only audio sample
+    } else if (syncWord == SYNC_VALUE_EXTSS_BE || syncWord == SYNC_VALUE_EXTSS_LE) {
+      // Check for DTS Express/HD sync word and return 4096 if found. This is the only audio sample
       // count that is used by DTS Streaming Encoder.
       return 4096;
     }
 
     // See ETSI TS 102 114 subsection 5.4.1.
-    int position = buffer.position();
     int nblks;
     switch (buffer.get(position)) {
       case FIRST_BYTE_LE:
@@ -392,7 +398,7 @@ public final class DtsUtil {
     }
 
     // If the frame is stored in 14-bit mode, adjust the frame size to reflect the actual byte size.
-    return uses14BitPerWord ? fsize * 16 / 14 : fsize;
+    return uses14BitPerWord ? (fsize >> 1 << 1) * 16 / 14 : fsize;
   }
 
   /**
@@ -404,96 +410,168 @@ public final class DtsUtil {
    */
   public static DtsHeader parseDtsHdHeader(byte[] header) throws ParserException {
     ParsableBitArray headerBits = getNormalizedFrame(header);
-    headerBits.skipBits(32 + 8); // SYNCEXTSSH, UserDefinedBits
-
-    int extensionSubstreamIndex = headerBits.readBits(2); // nExtSSIndex
-    int headerSizeInBits; // nuBits4Header
-    int extensionSubstreamFrameSizeBits; // nuBits4ExSSFsize
-    if (!headerBits.readBit()) { // bHeaderSizeType
-      headerSizeInBits = 8;
-      extensionSubstreamFrameSizeBits = 16;
+    headerBits.skipBits(32 + 8);
+    int extensionSubstreamIndex = headerBits.readBits(2);
+    int frameSizeBits;
+    if (!headerBits.readBit()) {
+      headerBits.skipBits(8);
+      frameSizeBits = 16;
     } else {
-      headerSizeInBits = 12;
-      extensionSubstreamFrameSizeBits = 20;
+      headerBits.skipBits(12);
+      frameSizeBits = 20;
     }
-    headerBits.skipBits(headerSizeInBits); // nuExtSSHeaderSize
-    int extensionSubstreamFrameSize =
-        headerBits.readBits(extensionSubstreamFrameSizeBits) + 1; // nuExtSSFsize
-
-    int assetsCount; // nuNumAssets
-    int referenceClockCode; // nuRefClockCode
-    int extensionSubstreamFrameDurationCode; // nuExSSFrameDurationCode
-
-    boolean staticFieldsPresent = headerBits.readBit(); // bStaticFieldsPresent
+    int frameSize = headerBits.readBits(frameSizeBits) + 1;
+    int assetsCount;
+    int referenceClockCode;
+    int frameDurationCode;
+    int numMixOutConfigs = 0;
+    int[] numMixOutChs = new int[0];
+    boolean mixMetadataEnabled = false;
+    boolean staticFieldsPresent = headerBits.readBit();
     if (staticFieldsPresent) {
       referenceClockCode = headerBits.readBits(2);
-      extensionSubstreamFrameDurationCode = 512 * (headerBits.readBits(3) + 1);
-
-      if (headerBits.readBit()) { // bTimeStampFlag
-        headerBits.skipBits(32 + 4); // nuTimeStamp, nLSB
+      frameDurationCode = 512 * (headerBits.readBits(3) + 1);
+      if (headerBits.readBit()) {
+        headerBits.skipBits(32 + 4);
       }
-
-      int audioPresentationsCount = headerBits.readBits(3) + 1; // nuNumAudioPresnt
+      int audioPresentationsCount = headerBits.readBits(3) + 1;
       assetsCount = headerBits.readBits(3) + 1;
-      if (audioPresentationsCount != 1 || assetsCount != 1) {
-        throw ParserException.createForUnsupportedContainerFeature(
-            /* message= */ "Multiple audio presentations or assets not supported");
+      int[] activeExssMasks = new int[audioPresentationsCount];
+      for (int ns = 0; ns < audioPresentationsCount; ns++) {
+        activeExssMasks[ns] = headerBits.readBits(extensionSubstreamIndex + 1);
       }
-
-      // We've already asserted audioPresentationsCount = 1.
-      int activeExtensionSubstreamMask =
-          headerBits.readBits(extensionSubstreamIndex + 1); // nuActiveExSSMask
-
-      for (int i = 0; i < extensionSubstreamIndex + 1; i++) {
-        if (((activeExtensionSubstreamMask >> i) & 0x1) == 1) {
-          headerBits.skipBits(8); // nuActiveAssetMask
-        }
+      for (int ns = 0; ns < audioPresentationsCount; ns++) {
+        headerBits.skipBits(Integer.bitCount(activeExssMasks[ns]) * 8);
       }
-
-      if (headerBits.readBit()) { // bMixMetadataEnbl
-        headerBits.skipBits(2); // nuMixMetadataAdjLevel
-        int mixerOutputMaskBits = (headerBits.readBits(2) + 1) << 2; // nuBits4MixOutMask
-        int mixerOutputConfigurationCount = headerBits.readBits(2) + 1; // nuNumMixOutConfigs
-        // Output Mixing Configuration Loop
-        for (int i = 0; i < mixerOutputConfigurationCount; i++) {
-          headerBits.skipBits(mixerOutputMaskBits); // nuMixOutChMask
+      if (headerBits.readBit()) {
+        mixMetadataEnabled = true;
+        headerBits.skipBits(2);
+        int mixOutMaskBits = (headerBits.readBits(2) + 1) << 2;
+        numMixOutConfigs = headerBits.readBits(2) + 1;
+        numMixOutChs = new int[numMixOutConfigs];
+        for (int i = 0; i < numMixOutConfigs; i++) {
+          numMixOutChs[i] = dcaCountChsForMask(headerBits.readBits(mixOutMaskBits));
         }
       }
     } else {
-      // Assignments below are placeholders and will never be used as they are only relevant when
-      // staticFieldsPresent == true. Initialised here to keep the compiler happy.
       referenceClockCode = C.INDEX_UNSET;
-      extensionSubstreamFrameDurationCode = 0;
+      frameDurationCode = 0;
+      assetsCount = 1;
     }
-
-    // We've already asserted assetsCount = 1.
-    headerBits.skipBits(extensionSubstreamFrameSizeBits); // nuAssetFsize
+    for (int i = 0; i < assetsCount; i++) {
+      headerBits.skipBits(frameSizeBits);
+    }
     int sampleRate = C.RATE_UNSET_INT;
-    int channelCount = C.LENGTH_UNSET; // nuTotalNumChs
-
-    // Asset descriptor, see ETSI TS 102 114 V1.6.1 (2019-08) Table 7-5.
-    headerBits.skipBits(9 + 3); // nuAssetDescriptFsize, nuAssetIndex
+    int channelCount = C.LENGTH_UNSET;
+    boolean embeddedStereo = false;
+    boolean embedded6Ch = false;
+    headerBits.skipBits(9 + 3);
     if (staticFieldsPresent) {
-      if (headerBits.readBit()) { // bAssetTypeDescrPresent
-        headerBits.skipBits(4); // nuAssetTypeDescriptor
+      if (headerBits.readBit()) {
+        headerBits.skipBits(4);
       }
-      if (headerBits.readBit()) { // bLanguageDescrPresent
-        headerBits.skipBits(24); // LanguageDescriptor
+      if (headerBits.readBit()) {
+        headerBits.skipBits(24);
       }
-      if (headerBits.readBit()) { // bInfoTextPresent
-        int infoTextByteSize = headerBits.readBits(10) + 1; // nuInfoTextByteSize
-        headerBits.skipBytes(infoTextByteSize); // InfoTextString
+      if (headerBits.readBit()) {
+        int textSize = headerBits.readBits(10) + 1;
+        if (headerBits.bitsLeft() < textSize * 8) {
+          throw ParserException.createForMalformedContainer("InfoTextString exceeds remaining header data", null);
+        }
+        headerBits.skipBits(textSize * 8);
       }
-      headerBits.skipBits(5); // nuBitResolution
-      sampleRate = SAMPLE_RATE_BY_INDEX[headerBits.readBits(4)]; // nuMaxSampleRate
+      headerBits.skipBits(5);
+      sampleRate = SAMPLE_RATE_BY_INDEX[headerBits.readBits(4)];
       channelCount = headerBits.readBits(8) + 1;
-      // Done reading necessary bits, ignoring the rest.
+      if (headerBits.readBit()) {
+        embeddedStereo = channelCount > 2 && headerBits.readBit();
+        embedded6Ch = channelCount > 6 && headerBits.readBit();
+        int spkrMaskBits = 0;
+        if (headerBits.readBit()) {
+          spkrMaskBits = (headerBits.readBits(2) + 1) << 2;
+          headerBits.skipBits(spkrMaskBits);
+        }
+        int numRemapSets = headerBits.readBits(3);
+        int[] speakersPerSet = new int[numRemapSets];
+        for (int i = 0; i < numRemapSets; i++) {
+          speakersPerSet[i] = dcaCountChsForMask(headerBits.readBits(spkrMaskBits));
+        }
+        for (int i = 0; i < numRemapSets; i++) {
+          int numDecCh = headerBits.readBits(5) + 1;
+          for (int ch = 0; ch < speakersPerSet[i]; ch++) {
+            int remapMask = headerBits.readBits(numDecCh);
+            headerBits.skipBits(Integer.bitCount(remapMask) * 5);
+          }
+        }
+      } else {
+        headerBits.skipBits(3);
+      }
     }
-
+    boolean drcPresent = headerBits.readBit();
+    if (drcPresent) {
+      headerBits.skipBits(8);
+    }
+    if (headerBits.readBit()) {
+      headerBits.skipBits(5);
+    }
+    if (drcPresent && embeddedStereo) {
+      headerBits.skipBits(8);
+    }
+    if (mixMetadataEnabled && headerBits.readBit()) {
+      headerBits.skipBits(1 + 6);
+      if (headerBits.readBits(2) == 3) {
+        headerBits.skipBits(8);
+      } else {
+        headerBits.skipBits(3);
+      }
+      if (headerBits.readBit()) {
+        for (int i = 0; i < numMixOutConfigs; i++) {
+          headerBits.skipBits(6 * numMixOutChs[i]);
+        }
+      } else {
+        headerBits.skipBits(6 * numMixOutConfigs);
+      }
+      int nchDmix = channelCount != C.LENGTH_UNSET ? channelCount : 0;
+      if (embedded6Ch) {
+        nchDmix += 6;
+      }
+      if (embeddedStereo) {
+        nchDmix += 2;
+      }
+      for (int i = 0; i < numMixOutConfigs; i++) {
+        for (int j = 0; j < nchDmix; j++) {
+          int mixMapMask = headerBits.readBits(numMixOutChs[i]);
+          headerBits.skipBits(Integer.bitCount(mixMapMask) * 6);
+        }
+      }
+    }
+    int codingMode = headerBits.readBits(2);
+    String mimeType;
+    switch (codingMode) {
+      case 0:
+        int extensionMask = headerBits.readBits(12);
+        if ((extensionMask & DCA_EXSS_LBR) != 0) {
+          mimeType = MimeTypes.AUDIO_DTS_EXPRESS;
+        } else {
+          mimeType = MimeTypes.AUDIO_DTS_HD;
+        }
+        break;
+      case 1:
+        mimeType = MimeTypes.AUDIO_DTS_HD;
+        break;
+      case 2:
+        mimeType = MimeTypes.AUDIO_DTS_EXPRESS;
+        break;
+      case 3:
+      default:
+        throw ParserException.createForMalformedContainer(
+            /* message= */ "Unsupported coding mode in DTS HD header: "
+                + codingMode,
+            /* cause= */ null);
+    }
     long frameDurationUs = C.TIME_UNSET;
     if (staticFieldsPresent) {
       int referenceClockFrequency;
-      //  ETSI TS 102 114 V1.6.1 (2019-08) Table 7-3.
       switch (referenceClockCode) {
         case 0:
           referenceClockFrequency = 32_000;
@@ -510,17 +588,13 @@ public final class DtsUtil {
                   + referenceClockCode,
               /* cause= */ null);
       }
-      frameDurationUs =
-          Util.scaleLargeTimestamp(
-              extensionSubstreamFrameDurationCode, C.MICROS_PER_SECOND, referenceClockFrequency);
+      frameDurationUs = Util.scaleLargeTimestamp(frameDurationCode, C.MICROS_PER_SECOND, referenceClockFrequency);
     }
-    return new DtsHeader(
-        MimeTypes.AUDIO_DTS_EXPRESS,
-        channelCount,
-        sampleRate,
-        extensionSubstreamFrameSize,
-        frameDurationUs,
-        /* bitrate= */ 0);
+    int bitrate = 0;
+    if (frameDurationUs > 0) {
+      bitrate = (int) ((frameSize * 8L * C.MICROS_PER_SECOND) / frameDurationUs);
+    }
+    return new DtsHeader(mimeType, channelCount, sampleRate, frameSize, frameDurationUs, bitrate);
   }
 
   /**
@@ -685,29 +759,37 @@ public final class DtsUtil {
 
   /** Returns whether the sample data at the current {@link ExtractorInput} is a DTS-HD sample. */
   public static boolean isSampleDtsHd(ExtractorInput input, int sampleSize) throws IOException {
-    ParsableByteArray sampleData = new ParsableByteArray(sampleSize);
-    if (!input.peekFully(
-        sampleData.getData(), /* offset= */ 0, sampleSize, /* allowEndOfInput= */ true)) {
+    if (sampleSize < 10) {
+      return false;
+    }
+    byte[] scratch = new byte[10];
+    if (!input.peekFully(scratch, 0, 10, true)) {
+      input.resetPeekPosition();
+      return false;
+    }
+    int word = readSyncWord(scratch);
+    if (getFrameType(word) != FRAME_TYPE_CORE) {
+      input.resetPeekPosition();
+      return false;
+    }
+    int coreFrameSize = getDtsFrameSize(scratch);
+    if (coreFrameSize < 10 || sampleSize < coreFrameSize + 4) {
+      input.resetPeekPosition();
+      return false;
+    }
+    input.advancePeekPosition(coreFrameSize - 10);
+    byte[] syncBuf = new byte[4];
+    if (!input.peekFully(syncBuf, 0, 4, true)) {
+      input.resetPeekPosition();
+      return false;
+    }
+    word = readSyncWord(syncBuf);
+    if (getFrameType(word) != FRAME_TYPE_EXTENSION_SUBSTREAM) {
+      input.resetPeekPosition();
       return false;
     }
     input.resetPeekPosition();
-    int word = sampleData.peekInt();
-    if (DtsUtil.getFrameType(word) == DtsUtil.FRAME_TYPE_CORE) {
-      if (sampleData.bytesLeft() < 10) {
-        return false;
-      }
-      byte[] header = new byte[10];
-      sampleData.readBytes(header, /* offset= */ 0, /* length= */ 10);
-      sampleData.setPosition(0);
-      int frameSize = DtsUtil.getDtsFrameSize(header);
-      if (frameSize <= 0 || sampleData.bytesLeft() < frameSize + 4) {
-        return false;
-      }
-      sampleData.skipBytes(frameSize);
-      word = sampleData.readInt();
-      return DtsUtil.getFrameType(word) == DtsUtil.FRAME_TYPE_EXTENSION_SUBSTREAM;
-    }
-    return false;
+    return true;
   }
 
   /**
@@ -785,6 +867,83 @@ public final class DtsUtil {
         || frameHeader[0] == FIRST_BYTE_EXTSS_LE
         || frameHeader[0] == FIRST_BYTE_UHD_FTOC_SYNC_LE
         || frameHeader[0] == FIRST_BYTE_UHD_FTOC_NONSYNC_LE;
+  }
+
+  /**
+   * Counts the number of channels for a DTS speaker activity mask. Some mask bits represent channel
+   * pairs, so this is not a simple bit count. Matches FFmpeg's {@code ff_dca_count_chs_for_mask()}.
+   */
+  private static int dcaCountChsForMask(int mask) {
+    return Integer.bitCount((mask & 0xffff) | ((mask & 0xae66) << 16));
+  }
+
+  /**
+   * Reads a 4-byte big-endian sync word from {@code data} starting at offset 0.
+   *
+   * <p>This is a low-level helper shared by DTS extractors and utility methods to avoid duplicating
+   * the same byte-shift arithmetic in multiple places.
+   */
+  public static int readSyncWord(byte[] data) {
+    return ((data[0] & 0xFF) << 24) | ((data[1] & 0xFF) << 16) | ((data[2] & 0xFF) << 8) | (data[3] & 0xFF);
+  }
+
+  /**
+   * Returns the frame size (in bytes) of a DTS-HD Extension Substream (EXSS) frame.
+   *
+   * <p>This reads only far enough into the header to extract {@code nuExtSSFsize}, without
+   * performing the full header parse done by {@link #parseDtsHdHeader}.
+   *
+   * @param header A byte array containing at least the first 10 bytes of an EXSS frame.
+   * @return The total EXSS frame size in bytes.
+   */
+  public static int parseDtsHdFrameSize(byte[] header) {
+    ParsableBitArray bits = getNormalizedFrame(header);
+    bits.skipBits(32 + 8 + 2);
+    boolean longHeader = bits.readBit();
+    bits.skipBits(longHeader ? 12 : 8);
+    return bits.readBits(longHeader ? 20 : 16) + 1;
+  }
+
+  /**
+   * Returns {@code true} if the data at the current peek position of {@code input} begins with a
+   * RIFF container header (the four bytes {@code RIFF}, i.e. {@code 0x52494646}). The peek
+   * position is reset after reading.
+   */
+  public static boolean isRiffContainer(ExtractorInput input) throws IOException {
+    byte[] header = new byte[4];
+    input.peekFully(header, 0, 4);
+    input.resetPeekPosition();
+    return header[0] == 0x52 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x46;
+  }
+
+  /**
+   * Searches for a DTS Core sync word (any encoding variant) by peeking 2 bytes at a time.
+   *
+   * <p>The peek position of {@code input} must be reset before calling. After the call, the peek
+   * position is indeterminate; call {@link ExtractorInput#resetPeekPosition()} as needed.
+   *
+   * @param input The {@link ExtractorInput} to peek from.
+   * @param maxBytesToSearch Maximum number of bytes to examine.
+   * @return The byte offset from the current read position to the first byte of the sync word, or
+   *     {@code -1} if no sync word was found within the search window.
+   */
+  public static int findDtsCoreSync(ExtractorInput input, int maxBytesToSearch) throws IOException {
+    byte[] scratch = new byte[4];
+    input.peekFully(scratch, 0, 2);
+    int bytesSniffed = 2;
+    maxBytesToSearch -= 2;
+    while (maxBytesToSearch >= 2) {
+      input.peekFully(scratch, 2, 2);
+      bytesSniffed += 2;
+      maxBytesToSearch -= 2;
+      int word = readSyncWord(scratch);
+      if (getFrameType(word) == FRAME_TYPE_CORE) {
+        return bytesSniffed - 4;
+      }
+      scratch[0] = scratch[2];
+      scratch[1] = scratch[3];
+    }
+    return -1;
   }
 
   private DtsUtil() {}

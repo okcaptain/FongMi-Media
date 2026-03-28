@@ -28,6 +28,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /** Defines common file type constants and helper methods. */
@@ -61,6 +62,7 @@ public final class FileTypes {
    *   <li>{@link #AVIF}
    *   <li>{@link #ASF}
    *   <li>{@link #RM}
+   *   <li>{@link #ISO}
    * </ul>
    */
   @Documented
@@ -68,7 +70,7 @@ public final class FileTypes {
   @Target(TYPE_USE)
   @IntDef({
     UNKNOWN, AC3, AC4, ADTS, AMR, FLAC, FLV, MATROSKA, MP3, MP4, OGG, PS, TS, WAV, WEBVTT, JPEG,
-    MIDI, AVI, PNG, WEBP, BMP, HEIF, AVIF, ASF, RM
+    MIDI, AVI, PNG, WEBP, BMP, HEIF, AVIF, ASF, RM, ISO
   })
   public @interface Type {}
 
@@ -147,6 +149,9 @@ public final class FileTypes {
   /** File type for the RMVB format. */
   public static final int RM = 23;
 
+  /** File type for ISO disc image formats (DVD and Blu-ray). */
+  public static final int ISO = 24;
+
   @VisibleForTesting /* package */ static final String HEADER_CONTENT_TYPE = "Content-Type";
 
   private static final String EXTENSION_AC3 = ".ac3";
@@ -194,6 +199,7 @@ public final class FileTypes {
   private static final String EXTENSION_AVIF = ".avif";
   private static final String EXTENSION_RM = ".rm";
   private static final String EXTENSION_RMVB = ".rmvb";
+  private static final String EXTENSION_ISO = ".iso";
 
   private FileTypes() {}
 
@@ -275,6 +281,8 @@ public final class FileTypes {
         return FileTypes.AVIF;
       case MimeTypes.APPLICATION_RM:
         return FileTypes.RM;
+      case MimeTypes.VIDEO_ISO:
+        return FileTypes.ISO;
       default:
         return FileTypes.UNKNOWN;
     }
@@ -283,6 +291,9 @@ public final class FileTypes {
   /** Returns the {@link Type} corresponding to the {@link Uri} provided. */
   public static @FileTypes.Type int inferFileTypeFromUri(Uri uri) {
     @Nullable String filename = uri.getLastPathSegment();
+    if (filename != null) {
+      filename = filename.toLowerCase(Locale.US);
+    }
     if (filename == null) {
       return FileTypes.UNKNOWN;
     } else if (filename.endsWith(EXTENSION_AC3) || filename.endsWith(EXTENSION_EC3)) {
@@ -356,6 +367,8 @@ public final class FileTypes {
       return FileTypes.RM;
     } else if (filename.endsWith(EXTENSION_ASF) || filename.endsWith(EXTENSION_WMA) || filename.endsWith(EXTENSION_WMV)) {
       return FileTypes.ASF;
+    } else if (filename.endsWith(EXTENSION_ISO)) {
+      return FileTypes.ISO;
     } else {
       return FileTypes.UNKNOWN;
     }

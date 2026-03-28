@@ -28,7 +28,6 @@ import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.MimeTypes;
-import androidx.media3.common.ParserException;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.ParsableBitArray;
 import androidx.media3.common.util.ParsableByteArray;
@@ -101,7 +100,7 @@ public final class TsExtractor implements Extractor {
   @Target(TYPE_USE)
   @IntDef(
       flag = true,
-      value = {FLAG_EMIT_RAW_SUBTITLE_DATA})
+      value = {FLAG_EMIT_RAW_SUBTITLE_DATA, FLAG_IGNORE_SECTION_CRC})
   public @interface Flags {}
 
   /**
@@ -109,6 +108,12 @@ public final class TsExtractor implements Extractor {
    * transcoded to {@link MimeTypes#APPLICATION_MEDIA3_CUES} during extraction.
    */
   public static final int FLAG_EMIT_RAW_SUBTITLE_DATA = 1;
+
+  /**
+   * Flag to ignore CRC validation on PSI sections (PAT/PMT). Some Blu-ray discs produce
+   * PAT/PMT with incorrect CRC values.
+   */
+  public static final int FLAG_IGNORE_SECTION_CRC = 1 << 1;
 
   /**
    * @deprecated Use {@link #newFactory(SubtitleParser.Factory)} instead.
@@ -164,6 +169,7 @@ public final class TsExtractor implements Extractor {
   private final @Mode int mode;
   private final @Flags int extractorFlags;
   private final int timestampSearchBytes;
+  private final boolean ignoreSectionCrc;
   private final List<TimestampAdjuster> timestampAdjusters;
   private final ParsableByteArray tsPacketBuffer;
   private final SparseIntArray continuityCounters;
@@ -181,6 +187,8 @@ public final class TsExtractor implements Extractor {
   private boolean tracksEnded;
   private boolean hasOutputSeekMap;
   private boolean pendingSeekToStart;
+  private boolean pendingEnableNextVideoKeyFrame;
+  private long pendingSeekTimeUs = C.TIME_UNSET;
   @Nullable private TsPayloadReader id3Reader;
   private int bytesSinceLastSync;
   private int pcrPid;
@@ -345,6 +353,7 @@ public final class TsExtractor implements Extractor {
     tsPayloadReaders = new SparseArray<>();
     continuityCounters = new SparseIntArray();
     durationReader = new TsDurationReader(timestampSearchBytes);
+    ignoreSectionCrc = (extractorFlags & FLAG_IGNORE_SECTION_CRC) != 0;
     output = ExtractorOutput.PLACEHOLDER;
     pcrPid = -1;
     resetPayloadReaders();
@@ -404,6 +413,8 @@ public final class TsExtractor implements Extractor {
     }
     tsPacketBuffer.reset(/* limit= */ 0);
     continuityCounters.clear();
+    pendingSeekTimeUs = C.TIME_UNSET;
+    pendingEnableNextVideoKeyFrame = false;
     for (int i = 0; i < tsPayloadReaders.size(); i++) {
       tsPayloadReaders.valueAt(i).seek();
     }
@@ -528,6 +539,34 @@ public final class TsExtractor implements Extractor {
     return RESULT_CONTINUE;
   }
 
+  public void disableBinarySearchSeeking() {
+    hasOutputSeekMap = true;
+    durationReader.skipDurationReading();
+  }
+
+  public void enableNextVideoKeyFrame(long seekTimeUs) {
+    if (!tracksEnded) {
+      pendingEnableNextVideoKeyFrame = true;
+      pendingSeekTimeUs = seekTimeUs;
+      return;
+    }
+    for (int i = 0; i < tsPayloadReaders.size(); i++) {
+      TsPayloadReader reader = tsPayloadReaders.valueAt(i);
+      if (reader instanceof PesReader) {
+        ((PesReader) reader).enableRandomAccessIndicator(seekTimeUs);
+      }
+    }
+  }
+
+  private void applyPendingVideoKeyFrame() {
+    if (pendingEnableNextVideoKeyFrame) {
+      pendingEnableNextVideoKeyFrame = false;
+      long seekTimeUs = pendingSeekTimeUs;
+      pendingSeekTimeUs = C.TIME_UNSET;
+      enableNextVideoKeyFrame(seekTimeUs);
+    }
+  }
+
   // Internals.
 
   private void maybeOutputSeekMap(long inputLength) {
@@ -609,7 +648,7 @@ public final class TsExtractor implements Extractor {
     for (int i = 0; i < initialPayloadReadersSize; i++) {
       tsPayloadReaders.put(initialPayloadReaders.keyAt(i), initialPayloadReaders.valueAt(i));
     }
-    tsPayloadReaders.put(TS_PAT_PID, new SectionReader(new PatReader()));
+    tsPayloadReaders.put(TS_PAT_PID, new SectionReader(new PatReader(), ignoreSectionCrc));
     id3Reader = null;
   }
 
@@ -657,7 +696,7 @@ public final class TsExtractor implements Extractor {
         } else {
           int pid = patScratch.readBits(13);
           if (tsPayloadReaders.get(pid) == null) {
-            tsPayloadReaders.put(pid, new SectionReader(new PmtReader(pid)));
+            tsPayloadReaders.put(pid, new SectionReader(new PmtReader(pid), ignoreSectionCrc));
             remainingPmts++;
           }
         }
@@ -819,6 +858,7 @@ public final class TsExtractor implements Extractor {
           output.endTracks();
           remainingPmts = 0;
           tracksEnded = true;
+          applyPendingVideoKeyFrame();
         }
       } else {
         tsPayloadReaders.remove(pid);
@@ -826,6 +866,7 @@ public final class TsExtractor implements Extractor {
         if (remainingPmts == 0) {
           output.endTracks();
           tracksEnded = true;
+          applyPendingVideoKeyFrame();
         }
       }
     }

@@ -420,6 +420,27 @@ public final class CodecSpecificDataUtil {
   }
 
   /**
+   * Returns a copy of {@code initializationData} with the Dolby Vision configuration record placed
+   * at index 2 (csd-2). Indices 0 and 1 are padded with empty byte arrays if not already present.
+   *
+   * @param initializationData The existing initialization data list, or {@code null}.
+   * @param dvCsd The Dolby Vision configuration record bytes.
+   * @return A new mutable list with the DV config at index 2.
+   */
+  public static List<byte[]> setDolbyVisionCsd(@Nullable List<byte[]> initializationData, byte[] dvCsd) {
+    List<byte[]> result = initializationData != null ? new ArrayList<>(initializationData) : new ArrayList<>();
+    while (result.size() < 2) {
+      result.add(new byte[0]);
+    }
+    if (result.size() < 3) {
+      result.add(dvCsd);
+    } else {
+      result.set(2, dvCsd);
+    }
+    return result;
+  }
+
+  /**
    * Parses an MPEG-4 Visual configuration information, as defined in ISO/IEC14496-2.
    *
    * @param videoSpecificConfig A byte array containing the MPEG-4 Visual configuration information

@@ -24,6 +24,7 @@ import android.net.Uri;
 import androidx.annotation.Nullable;
 import androidx.media3.common.AdViewProvider;
 import androidx.media3.common.C;
+import androidx.media3.common.FileTypes;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
@@ -37,6 +38,7 @@ import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider;
 import androidx.media3.exoplayer.source.ads.AdsLoader;
 import androidx.media3.exoplayer.source.ads.AdsMediaSource;
+import androidx.media3.exoplayer.source.iso.IsoMediaSource;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.util.ReleasableExecutor;
@@ -542,6 +544,10 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
               msToUs(mediaItem.localConfiguration.imageDurationMs),
               checkNotNull(externalImageLoader))
           .createMediaSource(mediaItem);
+    }
+    int fileType = FileTypes.inferFileTypeFromUri(mediaItem.localConfiguration.uri);
+    if (fileType == FileTypes.ISO || MimeTypes.VIDEO_ISO.equals(mediaItem.localConfiguration.mimeType)) {
+      return new IsoMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem);
     }
     @C.ContentType
     int type =

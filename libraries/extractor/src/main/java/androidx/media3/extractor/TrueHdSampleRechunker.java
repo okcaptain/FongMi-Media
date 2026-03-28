@@ -28,9 +28,11 @@ import java.io.IOException;
 @UnstableApi
 public final class TrueHdSampleRechunker {
 
+  private static final int TRUEHD_SYNCFRAME_HEADER_SIZE = Ac3Util.TRUEHD_SYNCFRAME_HEADER_SIZE;
   private final byte[] syncframePrefix;
 
   private boolean foundSyncframe;
+  private boolean isAtmos;
   private int chunkSampleCount;
   private long chunkTimeUs;
   private @C.BufferFlags int chunkFlags;
@@ -38,10 +40,11 @@ public final class TrueHdSampleRechunker {
   private int chunkOffset;
 
   public TrueHdSampleRechunker() {
-    syncframePrefix = new byte[Ac3Util.TRUEHD_SYNCFRAME_PREFIX_LENGTH];
+    syncframePrefix = new byte[TRUEHD_SYNCFRAME_HEADER_SIZE];
   }
 
   public void reset() {
+    isAtmos = false;
     foundSyncframe = false;
     chunkSampleCount = 0;
   }
@@ -51,11 +54,29 @@ public final class TrueHdSampleRechunker {
       return;
     }
     input.peekFully(syncframePrefix, 0, Ac3Util.TRUEHD_SYNCFRAME_PREFIX_LENGTH);
-    input.resetPeekPosition();
     if (Ac3Util.parseTrueHdSyncframeAudioSampleCount(syncframePrefix) == 0) {
+      input.resetPeekPosition();
       return;
     }
     foundSyncframe = true;
+    int extraBytes = TRUEHD_SYNCFRAME_HEADER_SIZE - Ac3Util.TRUEHD_SYNCFRAME_PREFIX_LENGTH;
+    int peeked = input.peek(syncframePrefix, Ac3Util.TRUEHD_SYNCFRAME_PREFIX_LENGTH, extraBytes);
+    if (peeked == extraBytes) {
+      isAtmos = Ac3Util.isTrueHdAtmos(syncframePrefix);
+    }
+    input.resetPeekPosition();
+  }
+
+  public void markSyncframeFound() {
+    foundSyncframe = true;
+  }
+
+  public boolean hasSyncFrame() {
+    return foundSyncframe;
+  }
+
+  public boolean isAtmos() {
+    return isAtmos;
   }
 
   public void sampleMetadata(

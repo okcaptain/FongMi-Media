@@ -66,6 +66,10 @@ import java.io.IOException;
     return isDurationRead;
   }
 
+  public void skipDurationReading() {
+    isDurationRead = true;
+  }
+
   /**
    * Reads a TS duration from the input, using the given PCR PID.
    *

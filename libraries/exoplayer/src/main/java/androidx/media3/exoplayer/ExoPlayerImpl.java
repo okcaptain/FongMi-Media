@@ -71,6 +71,7 @@ import androidx.media3.common.IllegalSeekPositionException;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaLibraryInfo;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.MediaTitle;
 import androidx.media3.common.Metadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
@@ -111,6 +112,8 @@ import androidx.media3.exoplayer.image.ImageOutput;
 import androidx.media3.exoplayer.metadata.MetadataOutput;
 import androidx.media3.exoplayer.source.MaskingMediaSource;
 import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.WrappingMediaSource;
+import androidx.media3.exoplayer.source.iso.IsoMediaSource;
 import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId;
 import androidx.media3.exoplayer.source.ShuffleOrder;
 import androidx.media3.exoplayer.source.TimelineWithUpdatedMediaItem;
@@ -210,6 +213,7 @@ import java.util.function.IntConsumer;
   private Commands availableCommands;
   private MediaMetadata mediaMetadata;
   private MediaMetadata playlistMetadata;
+  private List<MediaTitle> currentMediaTitles = Collections.emptyList();
   @Nullable private Format videoFormat;
   @Nullable private Format audioFormat;
   @Nullable private Object videoOutput;
@@ -1328,6 +1332,12 @@ import java.util.function.IntConsumer;
   }
 
   @Override
+  public List<MediaTitle> getCurrentMediaTitles() {
+    verifyApplicationThread();
+    return currentMediaTitles;
+  }
+
+  @Override
   public TrackSelectionParameters getTrackSelectionParameters() {
     verifyApplicationThread();
     TrackSelectionParameters parameters = trackSelector.getParameters();
@@ -2402,6 +2412,9 @@ import java.util.function.IntConsumer;
           Player.EVENT_PLAYBACK_PARAMETERS_CHANGED,
           listener -> listener.onPlaybackParametersChanged(newPlaybackInfo.playbackParameters));
     }
+    if (timelineChanged) {
+      maybeUpdateMediaTitles(newPlaybackInfo);
+    }
     updateAvailableCommands();
     listeners.flushEvents();
 
@@ -2410,6 +2423,53 @@ import java.util.function.IntConsumer;
         listener.onSleepingForOffloadChanged(newPlaybackInfo.sleepingForOffload);
       }
     }
+  }
+
+  private void maybeUpdateMediaTitles(PlaybackInfo playbackInfo) {
+    if (playbackInfo.timeline.isEmpty()) {
+      if (!currentMediaTitles.isEmpty()) {
+        currentMediaTitles = Collections.emptyList();
+      }
+      return;
+    }
+    int windowIndex = playbackInfo.timeline.getPeriodByUid(playbackInfo.periodId.periodUid, period).windowIndex;
+    if (windowIndex >= mediaSourceHolderSnapshots.size()) {
+      return;
+    }
+    MediaSource source = mediaSourceHolderSnapshots.get(windowIndex).mediaSource;
+    if (source instanceof WrappingMediaSource) {
+      source = ((WrappingMediaSource) source).getWrappedSource();
+    }
+    if (!(source instanceof IsoMediaSource)) {
+      if (!currentMediaTitles.isEmpty()) {
+        currentMediaTitles = Collections.emptyList();
+      }
+      return;
+    }
+    IsoMediaSource isoSource = (IsoMediaSource) source;
+    @Nullable List<MediaTitle> scanned = isoSource.getMediaTitles();
+    if (scanned == null && currentMediaTitles.isEmpty()) {
+      return;
+    }
+    List<MediaTitle> base = scanned != null ? scanned : currentMediaTitles;
+    List<MediaTitle> newList = applyTitleSelection(base, isoSource.getSelectedTitleIndex());
+    if (!newList.equals(currentMediaTitles)) {
+      currentMediaTitles = newList;
+      if (!newList.isEmpty()) {
+        listeners.queueEvent(Player.EVENT_MEDIA_TITLES_CHANGED, l -> l.onMediaTitlesChanged(newList));
+      }
+    }
+  }
+
+  private static List<MediaTitle> applyTitleSelection(List<MediaTitle> titles, int selectedIndex) {
+    if (selectedIndex < 0) {
+      return titles;
+    }
+    List<MediaTitle> result = new ArrayList<>(titles.size());
+    for (MediaTitle t : titles) {
+      result.add(t.index == selectedIndex ? t.withSelected(true) : t.withSelected(false));
+    }
+    return result;
   }
 
   private PositionInfo getPreviousPositionInfo(

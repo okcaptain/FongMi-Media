@@ -38,6 +38,7 @@ public final class SectionReader implements TsPayloadReader {
 
   private final SectionPayloadReader reader;
   private final ParsableByteArray sectionData;
+  private final boolean ignoreCrc;
 
   private int totalSectionLength;
   private int bytesRead;
@@ -45,7 +46,12 @@ public final class SectionReader implements TsPayloadReader {
   private boolean waitingForPayloadStart;
 
   public SectionReader(SectionPayloadReader reader) {
+    this(reader, false);
+  }
+
+  public SectionReader(SectionPayloadReader reader, boolean ignoreCrc) {
     this.reader = reader;
+    this.ignoreCrc = ignoreCrc;
     sectionData = new ParsableByteArray(DEFAULT_SECTION_BUFFER_LENGTH);
   }
 
@@ -123,8 +129,13 @@ public final class SectionReader implements TsPayloadReader {
         bytesRead += bodyBytesToRead;
         if (bytesRead == totalSectionLength) {
           if (sectionSyntaxIndicator) {
+            // Malformed section too short to contain CRC_32; discard.
+            if (totalSectionLength < 4) {
+              waitingForPayloadStart = true;
+              return;
+            }
             // This section has common syntax as defined in ISO/IEC 13818-1, section 2.4.4.11.
-            if (Util.crc32(sectionData.getData(), 0, totalSectionLength, 0xFFFFFFFF) != 0) {
+            if (!ignoreCrc && Util.crc32(sectionData.getData(), 0, totalSectionLength, 0xFFFFFFFF) != 0) {
               // The CRC is invalid so discard the section.
               waitingForPayloadStart = true;
               return;
