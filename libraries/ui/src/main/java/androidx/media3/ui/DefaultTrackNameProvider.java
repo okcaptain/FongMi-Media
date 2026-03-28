@@ -236,7 +236,7 @@ public class DefaultTrackNameProvider implements TrackNameProvider {
         return "DTS-Express";
       case MimeTypes.AUDIO_DTS_HD:
         return "DTS-HD";
-      case MimeTypes.AUDIO_DTS_X:
+      case MimeTypes.AUDIO_DTS_UHD_P2:
         return "DTS:X";
       case MimeTypes.AUDIO_E_AC3:
         return "E-AC-3";
