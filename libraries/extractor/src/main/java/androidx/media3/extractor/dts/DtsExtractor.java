@@ -247,7 +247,23 @@ public final class DtsExtractor implements Extractor {
     if (headerSize > EXTSS_HEADER_PREFIX_SIZE) {
       input.peekFully(extssHeader, EXTSS_HEADER_PREFIX_SIZE, headerSize - EXTSS_HEADER_PREFIX_SIZE);
     }
-    return DtsUtil.parseDtsHdHeader(extssHeader);
+    return parseDtsHdHeaderWithXllXScan(input, extssHeader);
+  }
+
+  private static DtsUtil.DtsHeader parseDtsHdHeaderWithXllXScan(ExtractorInput input, byte[] header) throws IOException {
+    DtsUtil.DtsHeader dtsHeader = DtsUtil.parseDtsHdHeader(header);
+    if (MimeTypes.AUDIO_DTS_MA.equals(dtsHeader.mimeType)) {
+      int xllPayloadSize = dtsHeader.frameSize - header.length;
+      if (xllPayloadSize > 0) {
+        int scanSize = Math.min(xllPayloadSize, DtsUtil.XLL_X_SCAN_MAX_BYTES);
+        byte[] xllPayload = new byte[scanSize];
+        input.peekFully(xllPayload, 0, scanSize, true);
+        if (DtsUtil.containsXllXSyncWord(xllPayload, 0, scanSize)) {
+          return dtsHeader.withMimeType(MimeTypes.AUDIO_DTS_X);
+        }
+      }
+    }
+    return dtsHeader;
   }
 
   @RequiresNonNull({"extractorOutput", "trackOutput"})

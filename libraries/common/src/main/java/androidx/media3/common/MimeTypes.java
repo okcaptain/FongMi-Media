@@ -98,9 +98,11 @@ public final class MimeTypes {
   public static final String AUDIO_AC4 = BASE_TYPE_AUDIO + "/ac4";
   public static final String AUDIO_TRUEHD = BASE_TYPE_AUDIO + "/true-hd";
   public static final String AUDIO_DTS = BASE_TYPE_AUDIO + "/vnd.dts";
+  public static final String AUDIO_DTS_X = BASE_TYPE_AUDIO + "/vnd.dts.x";
   public static final String AUDIO_DTS_HD = BASE_TYPE_AUDIO + "/vnd.dts.hd";
+  public static final String AUDIO_DTS_MA = BASE_TYPE_AUDIO + "/vnd.dts.hd;profile=lossless";
   public static final String AUDIO_DTS_EXPRESS = BASE_TYPE_AUDIO + "/vnd.dts.hd;profile=lbr";
-  @UnstableApi public static final String AUDIO_DTS_UHD_P2 = BASE_TYPE_AUDIO + "/vnd.dts.uhd;profile=p2";
+  public static final String AUDIO_DTS_UHD_P2 = BASE_TYPE_AUDIO + "/vnd.dts.uhd;profile=p2";
   public static final String AUDIO_DSD = BASE_TYPE_AUDIO + "/vnd.dsd";
   public static final String AUDIO_DSD_LSBF_PLANAR = BASE_TYPE_AUDIO + "/vnd.dsd-lsbf-planar";
   public static final String AUDIO_DSD_MSBF_PLANAR = BASE_TYPE_AUDIO + "/vnd.dsd-msbf-planar";
@@ -731,8 +733,9 @@ public final class MimeTypes {
         return C.ENCODING_AC4;
       case MimeTypes.AUDIO_DTS:
         return C.ENCODING_DTS;
+      case MimeTypes.AUDIO_DTS_X:
       case MimeTypes.AUDIO_DTS_HD:
-        return C.ENCODING_DTS_HD;
+      case MimeTypes.AUDIO_DTS_MA:
       case MimeTypes.AUDIO_DTS_EXPRESS:
         return C.ENCODING_DTS_HD;
       case MimeTypes.AUDIO_DTS_UHD_P2:

@@ -380,6 +380,8 @@ public final class MediaCodecUtil {
       return MimeTypes.AUDIO_E_AC3;
     }
     if (MimeTypes.AUDIO_DTS_HD.equals(format.sampleMimeType)
+        || MimeTypes.AUDIO_DTS_X.equals(format.sampleMimeType)
+        || MimeTypes.AUDIO_DTS_MA.equals(format.sampleMimeType)
         || MimeTypes.AUDIO_DTS_UHD_P2.equals(format.sampleMimeType)) {
       // DTS decoders support DTS-HD streams (but decode only the core layer).
       return MimeTypes.AUDIO_DTS;

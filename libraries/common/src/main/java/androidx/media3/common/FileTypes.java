@@ -307,7 +307,9 @@ public final class FileTypes {
       case MimeTypes.AUDIO_DST:
         return FileTypes.DFF;
       case MimeTypes.AUDIO_DTS:
+      case MimeTypes.AUDIO_DTS_X:
       case MimeTypes.AUDIO_DTS_HD:
+      case MimeTypes.AUDIO_DTS_MA:
       case MimeTypes.AUDIO_DTS_EXPRESS:
         return FileTypes.DTS;
       default:
